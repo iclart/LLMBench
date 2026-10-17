@@ -1,73 +1,80 @@
 #!/usr/bin/env python3
-"""Runs one OpenCode agent on the railway task under the official rules.
+"""Runs one OpenCode agent on the railway task under the official rules, via
+OpenCode's v2 HTTP API (`opencode serve`).
 
   run_opencode.py --workspace DIR|TAR.GZ --out RUN_DIR --model provider/model
-                  [--minutes 150] [--snapshot-every 30] [--user NAME] [--env-file FILE]
-                  [--opencode PATH] [--variant V] [--max-resumes 20] [--opencode-config FILE]
+                  [--minutes 150] [--snapshot-every 30] [--env-file FILE]
+                  [--opencode-config FILE] [--port 4096] [--hostname 0.0.0.0]
+                  [--password PW] [--strict [--user llmagent]]
 
-- Copies the packaged workspace to RUN_DIR/workspace and starts
-  `opencode run` there with PROMPT.md, non-interactively.
-- Snapshots src/ every --snapshot-every minutes into RUN_DIR/snapshots/NNN.
-- Early submission: when the agent runs `make submit` (the workspace gets a
-  .submit file), the agent is stopped and the final snapshot taken.
-- Forced submission: at the deadline every process of the agent is killed
-  first, then the final snapshot is taken, so src/ cannot change in between.
-- If the agent stops before the deadline without submitting, the session is
-  resumed with a "N minutes left" message (up to --max-resumes times).
-- Afterwards the session is exported and token usage and cost are summarised
-  in RUN_DIR/run.json.
+What OpenCode handles: tool permissions (web access, questions to the user
+and files outside the workspace are denied in the run's config) and the live
+view: open http://<vm>:<port>/ in a browser (user `opencode`, the password is
+printed at start and saved in RUN_DIR/web.txt).
 
-Models: --model is a `provider/model` id from `opencode models`. It is also
-written to the run's config as both `model` and `small_model`, so OpenCode
-never falls back to another provider's model for titles or summaries. The
-agent runs with its own HOME, so credentials saved by `opencode providers
-login` are not visible to it: pass API keys with --env-file. A custom
-provider (e.g. an OpenAI-compatible endpoint) goes in a JSON file given to
---opencode-config, which is merged into the run's config; its permission
-settings cannot be loosened that way.
+What this script handles:
+- time: the prompt states the deadline; at every snapshot mark and 10 and 2
+  minutes before the end, the current time and the minutes left are steered
+  into the running session; `make time` works in the workspace too;
+- snapshots of src/ every --snapshot-every minutes into RUN_DIR/snapshots;
+- early submission: `make submit` in the workspace ends the run;
+- forced submission: at the deadline the session is interrupted and every
+  agent process killed before the final snapshot is taken;
+- resuming: if the agent goes idle without submitting, it is told the time
+  left and asked to continue (up to --max-resumes times);
+- usage: tokens and cost from the session's messages, in RUN_DIR/run.json.
 
-With --user (requires root) the agent runs as that dedicated account, so it
-cannot read anything that account cannot (keep the LLMBench checkout out of
-its reach) and vm_netguard.sh can restrict its network access. Tested with
-OpenCode 1.19.3.
+Modes. Trial (default): runs as the invoking user; only OpenCode's own
+permission rules apply, but its bash tool can still reach the network and
+read any file that user can. Strict (--strict, root): runs as the dedicated
+account --user, which must not be able to read the LLMBench checkout, and
+requires vm_netguard.sh to be active for it. Official results use --strict.
+
+Tested with OpenCode 1.19.3.
 """
 import argparse
+import base64
 import json
 import os
 import pwd
+import secrets
 import shutil
 import signal
 import subprocess
 import sys
 import tarfile
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-QUICK_EXIT_S = 30           # a run shorter than this counts as a failed start
-MAX_QUICK_EXITS = 3
 POLL_S = 2
-TITLE = "llmbench-railway"
+IDLE_GRACE_S = 5          # idle this long (and not submitted) before resuming
+QUICK_IDLE_S = 30         # a resume that goes idle sooner counts as a stall
+STARTUP_S = 120           # a prompt may take this long before the session shows as active
+MAX_STALLS = 3
+FINAL_NOTICES_MIN = (10, 2)
+NETGUARD_TABLE = "llmbench_guard"
 
-# Non-interactive permissions; web access is denied here and blocked by
-# vm_netguard.sh at the network level.
-OPENCODE_CONFIG = {
-    "$schema": "https://opencode.ai/config.json",
-    "autoupdate": False,
-    "share": "disabled",
-    "permission": {
-        "edit": "allow",
-        "bash": "allow",
-        "webfetch": "deny",
-        "websearch": "deny",
-        "external_directory": "deny",
-        "doom_loop": "allow",
-    },
+# Tool permissions for the agent (OpenCode config schema, checked with 1.19.3).
+PERMISSIONS = {
+    "edit": "allow",
+    "bash": "allow",
+    "webfetch": "deny",
+    "websearch": "deny",
+    "question": "deny",
+    "external_directory": "deny",
+    "doom_loop": "allow",
 }
 
 
 def log(msg):
     print(time.strftime("[%H:%M:%S] ") + msg, file=sys.stderr, flush=True)
+
+
+def clock(t):
+    return time.strftime("%H:%M", time.localtime(t))
 
 
 def read_env_file(path):
@@ -80,19 +87,41 @@ def read_env_file(path):
     return env
 
 
-class Agent:
-    def __init__(self, a, ws, home, out):
-        self.a, self.ws, self.home, self.out = a, ws, home, out
-        self.proc = None
-        self.started = 0.0
-        self.session = None
-        self.events = open(out / "logs/events.jsonl", "ab")
-        self.stderr = open(out / "logs/opencode.log", "ab")
+class Api:
+    """Minimal client for OpenCode's v2 HTTP API."""
+
+    def __init__(self, port, password):
+        self.base = f"http://127.0.0.1:{port}"
+        self.auth = "Basic " + base64.b64encode(f"opencode:{password}".encode()).decode()
+
+    def call(self, method, path, body=None, timeout=30):
+        req = urllib.request.Request(self.base + path, method=method,
+                                     data=json.dumps(body).encode() if body is not None else None,
+                                     headers={"Content-Type": "application/json", "Authorization": self.auth})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            text = r.read().decode()
+        return json.loads(text) if text else None
+
+    def healthy(self):
+        try:
+            return bool(self.call("GET", "/api/health", timeout=3).get("healthy"))
+        except (OSError, ValueError, urllib.error.URLError):
+            return False
+
+
+class Run:
+    def __init__(self, a, out, ws, home):
+        self.a, self.out, self.ws, self.home = a, out, ws, home
+        self.user = pwd.getpwnam(a.user) if a.strict else None
         self.env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(home), "LANG": "C.UTF-8",
-                    "TERM": "dumb"}
+                    "TERM": "dumb", "OPENCODE_SERVER_PASSWORD": a.password}
         if a.env_file:
             self.env.update(read_env_file(a.env_file))
-        self.user = pwd.getpwnam(a.user) if a.user else None
+        self.server = None
+        self.api = Api(a.port, a.password)
+        self.session = None
+        self.prompted_at = 0.0
+        self.started = False  # the session became active after the last prompt
 
     def _preexec(self):
         os.setsid()
@@ -101,37 +130,71 @@ class Agent:
             os.setgid(self.user.pw_gid)
             os.setuid(self.user.pw_uid)
 
-    def opencode(self, *args, **kw):
-        return subprocess.run([self.a.opencode, *args], env=self.env, cwd=self.ws, preexec_fn=self._preexec,
-                              capture_output=True, text=True, **kw)
+    def as_agent(self, argv, **kw):
+        return subprocess.run(argv, env=self.env, cwd=self.ws, preexec_fn=self._preexec, capture_output=True,
+                              text=True, **kw)
 
-    def start(self, message):
-        cmd = [self.a.opencode, "run", "--dir", str(self.ws), "--model", self.a.model, "--format", "json",
-               "--title", TITLE, "--auto"]
+    def start_server(self):
+        self.server = subprocess.Popen(
+            [self.a.opencode, "serve", "--port", str(self.a.port), "--hostname", self.a.hostname],
+            env=self.env, cwd=self.ws, preexec_fn=self._preexec, stdin=subprocess.DEVNULL,
+            stdout=open(self.out / "logs/server.log", "ab"), stderr=subprocess.STDOUT)
+        for _ in range(120):
+            if self.api.healthy():
+                return
+            if self.server.poll() is not None:
+                break
+            time.sleep(0.5)
+        sys.exit(f"opencode serve did not come up; see {self.out / 'logs/server.log'}")
+
+    def server_alive(self):
+        return self.server is not None and self.server.poll() is None
+
+    def create_session(self):
+        provider, _, model = self.a.model.partition("/")
+        ref = {"providerID": provider, "id": model}
         if self.a.variant:
-            cmd += ["--variant", self.a.variant]
-        if self.session:
-            cmd += ["--session", self.session]
-        cmd.append(message)
-        self.events.write(f'{{"llmbench": "start", "time": {time.time():.3f}, "resume": {json.dumps(bool(self.session))}}}\n'.encode())
-        self.events.flush()
-        self.proc = subprocess.Popen(cmd, env=self.env, cwd=self.ws, stdout=self.events, stderr=self.stderr,
-                                     stdin=subprocess.DEVNULL, preexec_fn=self._preexec)
-        self.started = time.monotonic()
+            ref["variant"] = self.a.variant
+        self.session = self.api.call("POST", "/api/session",
+                                     {"model": ref, "location": {"directory": str(self.ws)}})["data"]["id"]
 
-    def running(self):
-        return self.proc is not None and self.proc.poll() is None
+    def say(self, text, steer=False):
+        body = {"prompt": {"text": text}}
+        if steer:
+            body["delivery"] = "steer"
+        self.api.call("POST", f"/api/session/{self.session}/prompt", body)
+        if not steer:
+            self.prompted_at, self.started = time.monotonic(), False
 
-    def kill_all(self):
-        """Stops the agent and everything it started, including escaped processes."""
-        if self.proc is not None:
+    def active(self):
+        if self.session in self.api.call("GET", "/api/session/active")["data"]:
+            self.started = True
+            return True
+        # Right after a prompt the session takes a moment to show as active.
+        return not self.started and time.monotonic() - self.prompted_at < STARTUP_S
+
+    def reject_questions(self):
+        """Fallback: questions are denied by config, but never let one block the run."""
+        pending = self.api.call("GET", f"/api/session/{self.session}/question").get("data") or []
+        for q in pending:
+            self.api.call("POST", f"/api/session/{self.session}/question/{q['id']}/reject")
+            log(f"rejected a question to the user ({q['id']})")
+
+    def stop(self):
+        """Interrupts the session and kills every process of the agent."""
+        if self.session and self.server_alive():
+            try:
+                self.api.call("POST", f"/api/session/{self.session}/interrupt", timeout=10)
+            except (OSError, urllib.error.URLError):
+                pass
+        if self.server is not None:
             for sig in (signal.SIGTERM, signal.SIGKILL):
                 try:
-                    os.killpg(self.proc.pid, sig)
+                    os.killpg(self.server.pid, sig)
                 except ProcessLookupError:
                     break
                 try:
-                    self.proc.wait(timeout=10)
+                    self.server.wait(timeout=10)
                     break
                 except subprocess.TimeoutExpired:
                     continue
@@ -139,67 +202,32 @@ class Agent:
             subprocess.run(["pkill", "-KILL", "-u", str(self.user.pw_uid)], capture_output=True)
             time.sleep(1)
 
-    def find_session(self):
-        if self.session:
-            return self.session
-        try:
-            for line in (self.out / "logs/events.jsonl").read_text(errors="replace").splitlines():
-                sid = find_key(safe_json(line), "sessionID")
-                if sid:
-                    self.session = sid
-                    break
-        except OSError:
-            pass
-        return self.session
-
-
-def safe_json(line):
-    try:
-        return json.loads(line)
-    except ValueError:
-        return None
-
-
-def find_key(obj, key):
-    if isinstance(obj, dict):
-        if isinstance(obj.get(key), str):
-            return obj[key]
-        for v in obj.values():
-            r = find_key(v, key)
-            if r:
-                return r
-    elif isinstance(obj, list):
-        for v in obj:
-            r = find_key(v, key)
-            if r:
-                return r
-    return None
-
-
-def summarise_usage(export):
-    """Sums tokens and cost over assistant messages of an `opencode export` dump."""
-    total = {"cost": 0.0, "input": 0, "output": 0, "reasoning": 0, "cache_read": 0, "cache_write": 0, "messages": 0}
-
-    def visit(o):
-        if isinstance(o, dict):
-            if o.get("role") == "assistant" and ("cost" in o or "tokens" in o):
-                total["messages"] += 1
-                total["cost"] += float(o.get("cost") or 0)
-                t = o.get("tokens") or {}
-                for k in ("input", "output", "reasoning"):
-                    total[k] += int(t.get(k) or 0)
-                cache = t.get("cache") or {}
-                total["cache_read"] += int(cache.get("read") or 0)
-                total["cache_write"] += int(cache.get("write") or 0)
-                return
-            for v in o.values():
-                visit(v)
-        elif isinstance(o, list):
-            for v in o:
-                visit(v)
-
-    visit(export)
-    return total
+    def usage(self):
+        """Sums tokens and cost over the session's assistant messages."""
+        total = {"cost": 0.0, "input": 0, "output": 0, "reasoning": 0, "cache_read": 0, "cache_write": 0,
+                 "messages": 0, "tool_calls": 0}
+        messages, cursor = [], None
+        while True:
+            # The cursor encodes the order; sending `order` again with it is rejected.
+            q = f"/api/session/{self.session}/message?limit=200&" + (f"cursor={cursor}" if cursor else "order=asc")
+            page = self.api.call("GET", q)
+            messages += page.get("data") or []
+            cursor = (page.get("cursor") or {}).get("next")
+            if not cursor or not page.get("data"):
+                break
+        (self.out / "logs/messages.json").write_text(json.dumps(messages, ensure_ascii=False, indent=1))
+        for m in messages:
+            if m.get("type") != "assistant":
+                continue
+            total["messages"] += 1
+            total["cost"] += float(m.get("cost") or 0)
+            t = m.get("tokens") or {}
+            for k in ("input", "output", "reasoning"):
+                total[k] += int(t.get(k) or 0)
+            total["cache_read"] += int((t.get("cache") or {}).get("read") or 0)
+            total["cache_write"] += int((t.get("cache") or {}).get("write") or 0)
+            total["tool_calls"] += sum(1 for c in m.get("content") or [] if c.get("type") == "tool")
+        return total
 
 
 def snapshot_name(minutes):
@@ -217,13 +245,14 @@ def snapshot(ws, dest):
 
 
 def opencode_config(a):
-    cfg = json.loads(json.dumps(OPENCODE_CONFIG))
+    cfg = {"$schema": "https://opencode.ai/config.json", "autoupdate": False, "share": "disabled"}
     if a.opencode_config:
         extra = json.loads(Path(a.opencode_config).read_text())
         extra.pop("permission", None)  # the rules are not negotiable
         cfg.update(extra)
+    cfg["permission"] = dict(PERMISSIONS)
     cfg["model"] = a.model
-    cfg["small_model"] = a.model
+    cfg["small_model"] = a.model  # never fall back to another provider's model
     return cfg
 
 
@@ -242,16 +271,29 @@ def prepare(a, out):
         if not ws.exists():
             sys.exit("the archive must contain a top-level workspace/ directory")
     home = out / "home"
-    (home / ".config/opencode/opencode.json").write_text(json.dumps(opencode_config(a), indent=2))
-    if a.user:
+    cfg = home / ".config/opencode/opencode.json"
+    cfg.write_text(json.dumps(opencode_config(a), indent=2))
+    web = out / "web.txt"
+    web.write_text(f"url: http://<this machine>:{a.port}/\nuser: opencode\npassword: {a.password}\n")
+    web.chmod(0o600)
+    if a.strict:
         u = pwd.getpwnam(a.user)
         for p in [ws, home, *ws.rglob("*"), *home.rglob("*")]:
             os.chown(p, u.pw_uid, u.pw_gid)
-        # The agent may not loosen its own configuration.
-        cfg = home / ".config/opencode/opencode.json"
-        os.chown(cfg, 0, 0)
+        os.chown(cfg, 0, 0)  # the agent may not loosen its own configuration
         os.chmod(cfg, 0o444)
     return ws, home
+
+
+def check_strict(a, run):
+    if os.geteuid() != 0:
+        sys.exit("--strict requires running this script as root")
+    if subprocess.run(["nft", "list", "table", "inet", NETGUARD_TABLE], capture_output=True).returncode != 0:
+        sys.exit(f"--strict requires the network guard: sudo {HERE / 'vm_netguard.sh'} enable {a.user} <api hosts>")
+    probe = run.as_agent(["sh", "-c", 'test -w "$1" && test -w "$2"', "sh", str(run.ws), str(run.home)])
+    if probe.returncode != 0:
+        sys.exit(f"{a.user} cannot write {run.ws} and {run.home}: every parent directory of --out must be "
+                 f"traversable by it (chmod o+x), e.g. put runs under /srv/llmbench")
 
 
 def main():
@@ -259,39 +301,56 @@ def main():
     ap.add_argument("--workspace", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--model", required=True, help="provider/model, see `opencode models`")
-    ap.add_argument("--variant", help="provider-specific reasoning effort, passed to opencode --variant")
+    ap.add_argument("--variant", help="provider-specific reasoning effort")
     ap.add_argument("--minutes", type=float, default=150)
     ap.add_argument("--snapshot-every", type=float, default=30)
-    ap.add_argument("--user", help="run the agent as this account (requires root)")
     ap.add_argument("--env-file", help="KEY=VALUE lines, e.g. the provider API key")
-    ap.add_argument("--opencode", default=shutil.which("opencode") or "opencode")
-    ap.add_argument("--max-resumes", type=int, default=20)
     ap.add_argument("--opencode-config", help="JSON merged into the run's opencode config, e.g. a custom provider")
+    ap.add_argument("--opencode", default=shutil.which("opencode") or "opencode")
+    ap.add_argument("--port", type=int, default=4096)
+    ap.add_argument("--hostname", default="0.0.0.0", help="where the web UI listens")
+    ap.add_argument("--password", default=None, help="web UI / API password (default: random)")
+    ap.add_argument("--max-resumes", type=int, default=20)
+    ap.add_argument("--strict", action="store_true", help="official mode: dedicated account + network guard")
+    ap.add_argument("--user", default="llmagent", help="the dedicated account for --strict")
     a = ap.parse_args()
-    if a.user and os.geteuid() != 0:
-        sys.exit("--user requires running this script as root")
+    a.password = a.password or secrets.token_urlsafe(12)
 
     out = Path(a.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     ws, home = prepare(a, out)
-    prompt = (HERE / "PROMPT.md").read_text()
-    agent = Agent(a, ws, home, out)
-    version = agent.opencode("--version").stdout.strip()
+    run = Run(a, out, ws, home)
+    if a.strict:
+        check_strict(a, run)
+    ver = run.as_agent([a.opencode, "--version"])
+    version = ver.stdout.strip()
+    if ver.returncode != 0 or not version:
+        sys.exit(f"`opencode --version` failed:\n{ver.stderr[-2000:]}")
 
-    start_wall = time.time()
+    run.start_server()
+    run.create_session()
+    start = time.time()
     t0 = time.monotonic()
+    end_wall = start + a.minutes * 60
     deadline = t0 + a.minutes * 60
-    (ws / ".deadline").write_text(f"{int(start_wall + a.minutes * 60)}\n")
-    marks = []
-    k = 1
+    (ws / ".deadline").write_text(f"{int(end_wall)}\n")
+    marks, k = [], 1
     while round(k * a.snapshot_every, 6) < a.minutes:
         marks.append(round(k * a.snapshot_every, 6))
         k += 1
+    notices = sorted({*marks, *(a.minutes - m for m in FINAL_NOTICES_MIN if a.minutes - m > 0)})
 
-    log(f"opencode {version}, model {a.model}, {a.minutes:g} min, snapshots at {marks}")
-    agent.start(prompt)
-    resumes, quick_exits, end_reason = 0, 0, None
+    log(f"opencode {version}, model {a.model}, {'strict' if a.strict else 'trial'} mode, {a.minutes:g} min")
+    log(f"live view: http://<this machine>:{a.port}/  user opencode  password {a.password}  (also in {out / 'web.txt'})")
+    log(f"session {run.session}; forced submission at {clock(end_wall)}")
+    prompt = (HERE / "PROMPT.md").read_text()
+    run.say(f"{prompt}\n（系统消息）现在是 {clock(start)}，强制收卷时间是 {clock(end_wall)}，"
+            f"共 {a.minutes:g} 分钟。")
+
+    resumes, stalls, end_reason = 0, 0, None
+    idle_since, last_resume = None, time.monotonic()
     while True:
+        time.sleep(POLL_S)
         now = time.monotonic()
         if (ws / ".submit").exists():
             end_reason = "submitted"
@@ -299,51 +358,64 @@ def main():
         if now >= deadline:
             end_reason = "deadline"
             break
-        while marks and now - t0 >= marks[0] * 60:
+        if not run.server_alive():
+            end_reason = "server_died"
+            break
+        elapsed_min = (now - t0) / 60
+        left = max(1, round((deadline - now) / 60))
+        while marks and elapsed_min >= marks[0]:
             snapshot(ws, out / f"snapshots/{snapshot_name(marks[0])}")
             log(f"snapshot {snapshot_name(marks[0])}")
             marks.pop(0)
-        if not agent.running():
-            ran = now - agent.started
-            log(f"agent stopped after {ran:.0f} s (exit {agent.proc.returncode})")
-            quick_exits = quick_exits + 1 if ran < QUICK_EXIT_S else 0
-            if quick_exits >= MAX_QUICK_EXITS:
-                end_reason = "agent_failed"
+        try:
+            if notices and elapsed_min >= notices[0]:
+                notices.pop(0)
+                run.say(f"（系统消息）现在是 {clock(time.time())}，距离强制收卷还有 {left} 分钟。"
+                        + ("请确保 src/ 始终处于能编译、能通过 `make check` 的状态。" if left <= 10 else ""), steer=True)
+                log(f"time notice: {left} min left")
+            run.reject_questions()
+            if run.active():
+                idle_since = None
+                continue
+            idle_since = idle_since or now
+            if now - idle_since < IDLE_GRACE_S:
+                continue
+            stalls = stalls + 1 if now - last_resume < QUICK_IDLE_S else 0
+            if stalls >= MAX_STALLS:
+                end_reason = "agent_stalled"
                 break
             if resumes >= a.max_resumes:
                 end_reason = "resume_limit"
                 break
-            if not agent.find_session():
-                end_reason = "no_session"
-                break
-            left = max(1, int((deadline - now) / 60))
             resumes += 1
-            agent.start(f"（系统消息）距离强制收卷还有 {left} 分钟。请继续：先确保 `make check` 全部通过，再优化性能。"
-                        f"确认完成后可以运行 `make submit` 提前交卷。")
-        time.sleep(POLL_S)
+            idle_since, last_resume = None, now
+            run.say(f"（系统消息）你停下来了，但还没有交卷。现在是 {clock(time.time())}，距离强制收卷还有 {left} 分钟。"
+                    f"请继续：先确保 `make check` 全部通过，再优化性能。确认完成后可以运行 `make submit` 提前交卷。")
+            log(f"agent idle without submitting: resumed ({resumes})")
+        except (OSError, ValueError, urllib.error.URLError) as e:
+            log(f"api error: {e}")
 
-    agent.kill_all()
+    usage = None
+    try:
+        usage = run.usage()
+    except (OSError, ValueError, urllib.error.URLError) as e:
+        log(f"could not read usage: {e}")
+    run.stop()
     elapsed = time.monotonic() - t0
     final = f"{int(elapsed // 60):03d}_final"
     snapshot(ws, out / f"snapshots/{final}")
     log(f"{end_reason}: final snapshot {final} after {elapsed / 60:.1f} min")
 
-    usage, session = None, agent.find_session()
-    if session:
-        exp = agent.opencode("export", session, timeout=300)
-        if exp.returncode == 0:
-            (out / "logs/session_export.json").write_text(exp.stdout)
-            data = safe_json(exp.stdout[exp.stdout.find("{"):]) if "{" in exp.stdout else None
-            usage = summarise_usage(data) if data is not None else None
-    run = {
-        "tool": "opencode", "tool_version": version, "model": a.model, "variant": a.variant,
-        "minutes": a.minutes, "start": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start_wall)),
-        "elapsed_min": round(elapsed / 60, 2), "end_reason": end_reason,
-        "submitted": end_reason == "submitted", "resumes": resumes, "session": session, "usage": usage,
+    result = {
+        "tool": "opencode", "tool_version": version, "api": "v2", "model": a.model, "variant": a.variant,
+        "mode": "strict" if a.strict else "trial", "minutes": a.minutes,
+        "start": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start)),
+        "elapsed_min": round(elapsed / 60, 2), "end_reason": end_reason, "submitted": end_reason == "submitted",
+        "resumes": resumes, "session": run.session, "usage": usage,
         "snapshots": sorted(p.name for p in (out / "snapshots").iterdir()),
     }
-    (out / "run.json").write_text(json.dumps(run, indent=2, ensure_ascii=False))
-    log(json.dumps({k: run[k] for k in ("end_reason", "elapsed_min", "resumes", "usage")}, ensure_ascii=False))
+    (out / "run.json").write_text(json.dumps(result, indent=2, ensure_ascii=False))
+    log(json.dumps({k: result[k] for k in ("end_reason", "elapsed_min", "resumes", "usage")}, ensure_ascii=False))
     sys.exit(0 if end_reason in ("submitted", "deadline") else 1)
 
 

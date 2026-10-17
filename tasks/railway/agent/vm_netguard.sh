@@ -7,7 +7,9 @@
 #
 # Processes of <user> may only reach the listed hosts on TCP 443 (addresses
 # are resolved once, now), DNS, and loopback (OpenCode talks to its own local
-# server). Everything else they send is rejected. Other users are unaffected.
+# server). Replies on connections opened from outside are allowed, so the
+# OpenCode web UI served by <user> stays reachable. Everything else they send
+# is rejected. Other users are unaffected.
 # Needs nftables (`nft`).
 set -euo pipefail
 
@@ -32,6 +34,7 @@ case "${1:-}" in
       echo "  chain out {"
       echo "    type filter hook output priority 0; policy accept;"
       echo "    meta skuid != $uid accept"
+      echo "    ct state established,related accept"
       echo "    oif lo accept"
       echo "    udp dport 53 accept"
       echo "    tcp dport 53 accept"
