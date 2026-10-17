@@ -300,7 +300,10 @@ int run(int argc, char** argv) {
   for (const auto* phase : {&load.intents, &load.quiet})
     for (const auto& in : *phase) purchases += in.kind == IntentKind::Purchase;
 
-  rail::TicketSystem* sys = rail::create_ticket_system();  // never destroyed: see ticket_system.h
+  // Never destroyed (see ticket_system.h); kept in a static so it stays
+  // reachable and LeakSanitizer does not report the engine's memory.
+  static rail::TicketSystem* sys = nullptr;
+  sys = rail::create_ticket_system();
   BenchLog out;
   out.threads = threads;
   out.seed = seed;
