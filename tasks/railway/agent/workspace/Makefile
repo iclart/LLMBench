@@ -4,7 +4,8 @@
 #   make check      all public scenarios: reference answers, single-threaded
 #                   verification, concurrent run judged by railjudge
 #   make bench S=spring T=16     one concurrent run and its verdict
-#   make time       time left before the forced submission
+#   make time       time left before the forced submission (check and bench
+#                   print it too, as their last line)
 #   make submit     submit now (ends the session; src/ can no longer change)
 
 CXX ?= g++
@@ -18,6 +19,13 @@ WORLD := data/world.world
 
 .PHONY: all check bench time submit clean
 
+# Prints the time left before the forced submission, if the runner set one.
+TIME_LEFT = if [ -f .deadline ]; then \
+	  left=$$(( $$(cat .deadline) - $$(date +%s) )); \
+	  if [ $$left -gt 0 ]; then echo "$$(( left / 60 )) min $$(( left % 60 )) s left before the forced submission"; \
+	  else echo "time is up: src/ as of the deadline is final"; fi; \
+	else echo "no deadline set (not running under the official runner)"; fi
+
 all: build/railbench build/railrun
 
 build:
@@ -30,27 +38,27 @@ build/railrun: $(SRC) $(HDR) lib/librailrun.a | build
 	$(CXX) $(CXXFLAGS) -Iinclude $(SRC) lib/librailrun.a -o $@
 
 check: all
-	@for s in $(SCENARIOS); do \
+	@status=0; for s in $(SCENARIOS); do \
 	  echo "== $$s: query answers vs reference"; \
-	  ./build/railrun query $(WORLD) data/$$s.load build/$$s.answers --expect data/$$s.answers || exit 1; \
+	  ./build/railrun query $(WORLD) data/$$s.load build/$$s.answers --expect data/$$s.answers || { status=1; break; }; \
 	  echo "== $$s: single-threaded verification"; \
-	  ./build/railrun verify $(WORLD) data/$$s.load || exit 1; \
+	  ./build/railrun verify $(WORLD) data/$$s.load || { status=1; break; }; \
 	  echo "== $$s: $(T) threads, judged"; \
 	  ./build/railbench $(WORLD) data/$$s.load $(T) build/$$s.log && \
-	  bin/railjudge $(WORLD) data/$$s.load data/$$s.answers build/$$s.log --json build/$$s.json || exit 1; \
-	done
-	@echo "make check: all scenarios passed"
+	  bin/railjudge $(WORLD) data/$$s.load data/$$s.answers build/$$s.log --json build/$$s.json || { status=1; break; }; \
+	done; \
+	if [ $$status -eq 0 ]; then echo "make check: all scenarios passed"; else echo "make check: FAILED"; fi; \
+	$(TIME_LEFT); exit $$status
 
 bench: all
-	./build/railbench $(WORLD) data/$(S).load $(T) build/$(S)_t$(T).log
-	bin/railjudge $(WORLD) data/$(S).load data/$(S).answers build/$(S)_t$(T).log --json build/$(S)_t$(T).json
-	@cat build/$(S)_t$(T).json
+	@status=0; \
+	./build/railbench $(WORLD) data/$(S).load $(T) build/$(S)_t$(T).log && \
+	bin/railjudge $(WORLD) data/$(S).load data/$(S).answers build/$(S)_t$(T).log --json build/$(S)_t$(T).json && \
+	cat build/$(S)_t$(T).json || status=1; \
+	$(TIME_LEFT); exit $$status
 
 time:
-	@if [ -f .deadline ]; then \
-	  left=$$(( $$(cat .deadline) - $$(date +%s) )); \
-	  echo "$$(( left / 60 )) min $$(( left % 60 )) s left before the forced submission"; \
-	else echo "no deadline set (not running under the official runner)"; fi
+	@$(TIME_LEFT)
 
 submit:
 	@date +%s > .submit
