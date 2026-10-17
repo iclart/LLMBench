@@ -590,7 +590,7 @@
         { label: "强参考吞吐", num: true }, { label: "强参考查询 p99", num: true }, { label: "强参考订票 p99", num: true }],
       S.anchors.map((a) => ({ data: a, cells: [keyLabel(a.key), compact(a.baseline_throughput) + "/s", fmtUs(a.baseline_query_p99_ns / 1e3), fmtUs(a.baseline_book_p99_ns / 1e3),
         fmt(a.baseline_wall_s, a.baseline_wall_s < 10 ? 1 : 0) + " s", compact(a.strong_throughput) + "/s", fmtUs(a.strong_query_p99_ns / 1e3), fmtUs(a.strong_book_p99_ns / 1e3)] }))),
-      note("吞吐 = 每秒完成的调用数。分数按对数插值：基线 0 分、强参考 100 分。"))));
+      note("吞吐 = 每秒完成的调用数。分数按与强参考之比 r 的幂曲线计：基线 0 分、强参考 100 分，r = 0.5 约 65 分，单项最多 150 分。"))));
   }
 
   // ------------------------------------------------------------ run page

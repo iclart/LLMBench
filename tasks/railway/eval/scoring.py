@@ -9,8 +9,10 @@ main phase's booking quality from railjudge.
   total       = 65% performance + 10% functional + 12% transport
                 + 8% preference + 5% memory
   performance = mean over scenarios x thread counts of
-                70% throughput + 30% p99 latency, each log-interpolated:
-                0 at the baseline, 100 at the strong reference, not capped
+                70% throughput + 30% p99 latency, each scored on a power
+                curve of r = value / the strong reference's:
+                100 (r^0.6 - c^0.6) / (1 - c^0.6), c = baseline / strong,
+                so 0 at the baseline, 100 at the strong reference, at most 150
   transport   = mean over scenarios of a score for r = passenger-minutes
                 carried / the strong reference's: 70 at r = 1, 0 at r <= 0.93,
                 100 at r >= 1.03, linear in between
@@ -34,6 +36,10 @@ from pathlib import Path
 SCENARIOS = ["daily", "spring", "refund_wave"]
 PERF_WEIGHT, FUNCTIONAL_WEIGHT, TRANSPORT_WEIGHT, PREF_WEIGHT, MEMORY_WEIGHT = 0.65, 0.10, 0.12, 0.08, 0.05
 THROUGHPUT_WEIGHT, LATENCY_WEIGHT = 0.7, 0.3
+# Performance: 100 (r^e - c^e) / (1 - c^e) with r = value / strong and
+# c = baseline / strong, capped; c is at most 1 / MIN_SPAN so that a strong
+# reference barely ahead of the baseline does not turn noise into points.
+CURVE_EXPONENT, CURVE_CAP, MIN_SPAN = 0.6, 150.0, 4.0
 SATISFACTION_GATE = 0.85
 # Transport: (ratio to the strong reference, score) points, linear between.
 TRANSPORT_FLOOR, TRANSPORT_PAR, TRANSPORT_CEIL = (0.93, 0.0), (1.0, 70.0), (1.03, 100.0)
@@ -41,14 +47,35 @@ MEMORY_ZERO_RATIO = 4.0
 MIN_ENGINE_MB = 1.0  # below this the engine's own memory is measurement noise
 
 
-def log_score(x, base, strong):
-    """100 at the strong reference, 0 at the baseline, log-interpolated, not capped above."""
+def curve_score(x, base, strong):
+    """0 at the baseline, 100 at the strong reference, a power curve in x / strong between, at most CURVE_CAP.
+
+    A log scale would spread 0-100 evenly over every doubling from the
+    baseline up, so with the strong reference hundreds of times faster
+    than the baseline, half its throughput would still score close to 90.
+    The power curve keeps most of the range near the strong reference
+    (half scores about 65) and still gives credit far below it.
+    """
     if x <= 0 or base <= 0 or strong <= 0:
         return 0.0
-    span = math.log(strong / base)
-    if span <= 1e-9:
-        return 100.0 if x >= strong else 0.0
-    return max(0.0, 100.0 * math.log(x / base) / span)
+    c = min(base / strong, 1.0 / MIN_SPAN) ** CURVE_EXPONENT
+    s = 100.0 * ((x / strong) ** CURVE_EXPONENT - c) / (1.0 - c)
+    return min(CURVE_CAP, max(0.0, s))
+
+
+def narrow_spans(anchors):
+    """The measurements whose strong reference is less than MIN_SPAN times the
+    baseline (throughput or latency gain); scored as if it were MIN_SPAN times."""
+    out = []
+    for key, base in anchors["baseline"].items():
+        strong = anchors["strong"].get(key)
+        if not strong or "throughput" not in base or "throughput" not in strong:
+            continue
+        for what, span in (("throughput", strong["throughput"] / max(base["throughput"], 1e-9)),
+                           ("latency", latency_gain(strong, base))):
+            if span < MIN_SPAN:
+                out.append((key, what, span))
+    return out
 
 
 def latency_gain(m, base):
@@ -56,8 +83,8 @@ def latency_gain(m, base):
 
 
 def measurement_score(m, base, strong):
-    thr = log_score(m["throughput"], base["throughput"], strong["throughput"])
-    lat = log_score(latency_gain(m, base), 1.0, latency_gain(strong, base))
+    thr = curve_score(m["throughput"], base["throughput"], strong["throughput"])
+    lat = curve_score(latency_gain(m, base), 1.0, latency_gain(strong, base))
     return THROUGHPUT_WEIGHT * thr + LATENCY_WEIGHT * lat, thr, lat
 
 

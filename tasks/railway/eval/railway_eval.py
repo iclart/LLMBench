@@ -326,6 +326,9 @@ def cmd_prepare(args):
                     log(f"anchor {engine:8} {sc:11} t={t:<2} {m['throughput']:>10.0f} calls/s  "
                         f"query p99 {m['query_p99_ns'] / 1e3:8.1f} us  book p99 {m['book_p99_ns'] / 1e3:8.1f} us  "
                         f"wall {m['wall_s']:.1f} s")
+    for key, what, span in scoring.narrow_spans(anchors):
+        log(f"WARNING: {key} {what}: the strong reference is only {span:.1f}x the baseline; scored as if "
+            f"{scoring.MIN_SPAN:.0f}x (is this machine too small for the season?)")
     sp["anchors"].write_text(json.dumps(anchors, indent=2))
     sp["meta"].write_text(json.dumps({
         "name": sp["dir"].name, "fingerprint": season_fingerprint(sp),
