@@ -515,7 +515,7 @@
       .map(([id, t]) => el("a", { href: "#" + id }, t))));
 
     if (!groups.length) app.append(el("div", { class: "banner info" }, el("strong", {}, "还没有正式运行。"),
-      "正式运行需要：正式模式（--strict）、时限 150 分钟、用本赛季评分、任务包和提示词版本与赛季一致。其他运行列在“其他运行”里。"));
+      `正式运行需要：正式模式（--strict）、时限 ${DATA.standard_minutes} 分钟、用本赛季评分、任务包和提示词版本与赛季一致。其他运行列在“其他运行”里。`));
 
     app.append(section("board", "排行",
       note(`点 = 平均分，横线 = 最差到最好，短竖线 = 每次运行（空心表示该次有场景判错、崩溃或超内存）。总分 = 性能 65% + 功能 10% + 周转量 12% + 偏好 8% + 内存 5%；和强参考完全一样的实现得 ${fmt(DATA.ref_total)} 分，不封顶。`),
@@ -565,7 +565,7 @@
 
     app.append(section("time", "分数随时间", card(lineChart({
       series: groups.map((g) => ({ name: g.label, color: slotVar(g.slot), points: g.curve, step: true })),
-      x: { min: 0, max: 150, fmt: (v) => `${v}`, label: "分钟", unit: " 分钟" }, y: { min: 0, label: "平均分", fmt: (v) => compact(v) },
+      x: { min: 0, max: DATA.standard_minutes, fmt: (v) => `${v}`, label: "分钟", unit: " 分钟" }, y: { min: 0, label: "平均分", fmt: (v) => compact(v) },
       refs: [{ y: DATA.ref_total, label: "强参考" }], height: 280, fmtTip: (s, p) => fmt(p[1]),
       table: { headers: ["分钟", ...groups.map((g) => g.label)], rows: (groups[0]?.curve || []).map((p, i) => [p[0], ...groups.map((g) => fmt(g.curve[i][1]))]) },
     }), note("每个参赛单位各次运行在同一时刻的快照得分取平均。中间快照用精简评测（只测 4 线程、不跑 TSan），最后一张是完整评测，两者不完全可比。"))));
@@ -632,7 +632,7 @@
     const curveCard = card(curve.length ? lineChart({
       series: [{ name: "快照得分（隐藏负载）", color, points: curve.map((p) => [p.t, p.total, p]), step: true, markers: true, extendTo: Math.max(R.elapsed_min || 0, ...curve.map((p) => p.t)),
         hollow: (p) => p[2].mode !== "full" }],
-      x: { min: 0, max: Math.max(R.minutes || 150, R.elapsed_min || 0), label: "分钟", unit: " 分钟", fmt: (v) => `${Math.round(v)}` },
+      x: { min: 0, max: Math.max(R.minutes || DATA.standard_minutes, R.elapsed_min || 0), label: "分钟", unit: " 分钟", fmt: (v) => `${Math.round(v)}` },
       y: { min: 0, label: "总分" }, refs: [{ y: DATA.ref_total, label: "强参考" }], vlines, height: 240, legend: false,
       fmtTip: (s, p) => `${fmt(p[1])}（${p[2].name}，${p[2].mode === "full" ? "完整评测" : "精简评测"}）`,
       table: { headers: ["快照", "分钟", "总分", "评测"], rows: curve.map((p) => [p.name, fmt(p.t), fmt(p.total), p.mode]) },
@@ -644,7 +644,7 @@
       checkCard = card(el("h3", {}, "Agent 自测：make check 的公开场景吞吐"), lineChart({
         series: sc.map((s, i) => ({ name: SCEN[s], color: `var(--s${i + 1})`, markers: true,
           points: checks.filter((c) => c.scenarios[s]).map((c) => [c.t, c.scenarios[s].throughput, c]), hollow: (p) => !p[2].scenarios[s].ok })),
-        x: { min: 0, max: Math.max(R.minutes || 150, R.elapsed_min || 0), label: "分钟", unit: " 分钟", fmt: (v) => `${Math.round(v)}` },
+        x: { min: 0, max: Math.max(R.minutes || DATA.standard_minutes, R.elapsed_min || 0), label: "分钟", unit: " 分钟", fmt: (v) => `${Math.round(v)}` },
         y: { log: true, label: "调用/秒（对数）" }, height: 220, fmtTip: (s, p) => `${compact(p[1])}/s${p[2].passed ? "" : "（本次未全部通过）"}`,
         table: { headers: ["分钟", "通过", ...sc.map((s) => SCEN[s] + " 吞吐")], rows: checks.map((c) => [fmt(c.t), c.passed ? "是" : "否", ...sc.map((s) => c.scenarios[s] ? fmtInt(c.scenarios[s].throughput) : "–")]) },
       }), note("来自 Agent 在工作区里运行的 make check（公开负载、4 线程），只用来解释过程，从不参与评分；数据由 Agent 的工作区产生，理论上可被伪造。空心点 = 该场景判错。"),

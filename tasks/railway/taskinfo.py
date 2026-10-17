@@ -16,6 +16,12 @@ TASK = Path(__file__).resolve().parent
 PROMPT = TASK / "agent/PROMPT.md"
 VERSION_FILE = ".task_version"   # written into packaged workspaces
 
+# The session's time limits (TASK.md 11): the forced submission, and the
+# recommended time after which the agent is told to only fix and polish.
+MINUTES = 105
+RECOMMENDED_MINUTES = 90
+SNAPSHOT_EVERY_MINUTES = 30
+
 
 def _task_files():
     files = [TASK / "TASK.md", PROMPT, TASK / "include/ticket_system.h", TASK / "agent/workspace/Makefile"]

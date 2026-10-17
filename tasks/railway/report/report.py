@@ -45,7 +45,7 @@ KEYS = [f"{sc}/t{t}" for sc in SCENARIOS for t in THREADS]
 REF_TOTAL = (scoring.PERF_WEIGHT * 100 + scoring.FUNCTIONAL_WEIGHT * 100
              + scoring.TRANSPORT_WEIGHT * scoring.TRANSPORT_PAR[1] + scoring.PREF_WEIGHT * 100
              + scoring.MEMORY_WEIGHT * 100)
-STANDARD_MINUTES = 150
+STANDARD_MINUTES = taskinfo.MINUTES
 CURVE_STEP_MIN = 5
 SOURCE_SUFFIXES = {".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".inc"}
 OUTPUT_HEAD = OUTPUT_TAIL = 20
@@ -719,12 +719,12 @@ def build_index(season, runs):
                    "harness_mb": a.get("harness_mb")},
         "groups": rows,
         "others": [run_meta(r) for r in runs if r["category"] != "ranked"],
-        "keys": KEYS, "ref_total": REF_TOTAL,
+        "keys": KEYS, "ref_total": REF_TOTAL, "standard_minutes": STANDARD_MINUTES,
     }
 
 
 def build_run_page(r, season, full):
-    page = {"page": "run", "season": {"name": season["name"]}, "keys": KEYS, "ref_total": REF_TOTAL, "run": run_meta(r),
+    page = {"page": "run", "season": {"name": season["name"]}, "keys": KEYS, "ref_total": REF_TOTAL, "standard_minutes": STANDARD_MINUTES, "run": run_meta(r),
             "events": r["run"].get("events") or [], "machine": r["run"].get("machine")}
     if r["final"]:
         page["measurements"] = measurement_rows(r, season)

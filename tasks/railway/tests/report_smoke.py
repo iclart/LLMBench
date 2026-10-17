@@ -126,28 +126,28 @@ def main():
 
     stub, base = TASK / "stub/solution.cpp", TASK / "reference/baseline/baseline.cpp"
     good = base  # never the strong reference: the report embeds the submitted source
-    ver = {"task_version": taskinfo.task_version(), "prompt_sha": taskinfo.prompt_sha(), "minutes": 150}
+    ver = {"task_version": taskinfo.task_version(), "prompt_sha": taskinfo.prompt_sha(), "minutes": taskinfo.MINUTES}
     runs = work / "runs"
     t0 = int(START * 1000)
     common = {**ver, "start": "2026-10-17 10:00:00", "start_epoch": START, "resumes": 1,
-              "events": [{"t_min": 30, "kind": "snapshot", "name": "030"}, {"t_min": 30, "kind": "notice", "left_min": 120},
+              "events": [{"t_min": 30, "kind": "snapshot", "name": "030"}, {"t_min": 30, "kind": "notice", "left_min": 75},
                          {"t_min": 31, "kind": "resume", "n": 1}, {"t_min": 31, "kind": "submitted"}]}
     make_run(runs, "oc-model-a-1", {**common, "tool": "opencode", "tool_version": "2.0.30", "model": "fake/model-a",
                                     "mode": "strict", "elapsed_min": 31, "end_reason": "submitted",
                                     "usage": {"cost": 0.2, "input": 140000, "output": 3200}},
              [("030", stub), ("031_final", good)], messages=opencode_messages(t0))
     make_run(runs, "oc-model-a-2", {**common, "tool": "opencode", "tool_version": "2.0.31", "model": "fake/model-a",
-                                    "mode": "strict", "elapsed_min": 150, "end_reason": "deadline",
+                                    "mode": "strict", "elapsed_min": 105, "end_reason": "deadline",
                                     "usage": {"cost": 0.3, "input": 150000, "output": 4000}},
-             [("030", base), ("150_final", stub)], messages=opencode_messages(t0))
+             [("030", base), ("105_final", stub)], messages=opencode_messages(t0))
     cc = make_run(runs, "cc-model-b", {**common, "tool": "claude-code", "tool_version": "2.1.0", "manual": True,
                                        "model": "anthropic/model-b", "variant": "high", "mode": "strict",
                                        "elapsed_min": 90, "end_reason": "submitted", "usage": None},
                   [("030", base), ("090_final", base)], transcript=claude_code_log(t0))
     make_run(runs, "trial-model-c", {**common, "tool": "opencode", "model": "fake/model-c", "mode": "trial",
-                                     "elapsed_min": 150, "end_reason": "deadline"}, [("150_final", base)])
+                                     "elapsed_min": 105, "end_reason": "deadline"}, [("105_final", base)])
     make_run(runs, "unscored-model-d", {**common, "tool": "opencode", "model": "fake/model-d", "mode": "strict",
-                                        "elapsed_min": 150, "end_reason": "deadline"}, [("150_final", base)])
+                                        "elapsed_min": 105, "end_reason": "deadline"}, [("105_final", base)])
     make_run(runs, "ref-baseline", {**ver, "tool": "reference", "engine": "baseline", "model": "reference/baseline",
                                     "mode": "reference", "minutes": None, "elapsed_min": 0.1, "end_reason": "submitted"},
              [("000", stub), ("001_final", base)])

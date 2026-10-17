@@ -3,7 +3,7 @@
 OpenCode's v2 HTTP API (`opencode serve`).
 
   run_opencode.py --workspace DIR|TAR.GZ --out RUN_DIR --model provider/model
-                  [--minutes 150] [--snapshot-every 30] [--env-file FILE]
+                  [--minutes 105] [--recommended 90] [--snapshot-every 30] [--env-file FILE]
                   [--opencode-config FILE] [--port 4096] [--hostname 0.0.0.0]
                   [--password PW] [--strict [--user llmagent]]
 
@@ -108,11 +108,16 @@ def clock(t):
 
 
 # What the agent is told, word for word the same in every runner (run_manual.py too).
-def start_message(prompt, start, end, minutes):
-    return f"{prompt}\n（系统消息）现在是 {clock(start)}，强制收卷时间是 {clock(end)}，共 {minutes:g} 分钟。"
+def start_message(prompt, start, end, minutes, recommended=None):
+    rec = (f"推荐在 {clock(start + recommended * 60)}（{recommended:g} 分钟）前完成主要工作，"
+           if recommended and recommended < minutes else "")
+    return f"{prompt}\n（系统消息）现在是 {clock(start)}，{rec}强制收卷时间是 {clock(end)}，共 {minutes:g} 分钟。"
 
 
-def notice_message(now, left_min):
+def notice_message(now, left_min, recommended=None):
+    if recommended:
+        return (f"（系统消息）现在是 {clock(now)}，已到推荐用时（{recommended:g} 分钟），距离强制收卷还有 {left_min} 分钟。"
+                "请确保 src/ 随时可以交卷：剩余时间只做修错和小改进；确认已经完成可以运行 `make submit` 提前交卷。")
     return (f"（系统消息）现在是 {clock(now)}，距离强制收卷还有 {left_min} 分钟。"
             + ("请确保 src/ 始终处于能编译、能通过 `make check` 的状态。" if left_min <= 10 else ""))
 
@@ -122,14 +127,16 @@ def resume_message(now, left_min):
             f"请继续：先确保 `make check` 全部通过，再优化性能。确认完成后可以运行 `make submit` 提前交卷。")
 
 
-def notice_marks(minutes, snapshot_every):
+def notice_marks(minutes, snapshot_every, recommended=None):
     """Snapshot marks and time-notice marks, in minutes from the start."""
     marks, k = [], 1
     while round(k * snapshot_every, 6) < minutes:
         marks.append(round(k * snapshot_every, 6))
         k += 1
-    notices = sorted({*marks, *(minutes - m for m in FINAL_NOTICES_MIN if minutes - m > 0)})
-    return marks, notices
+    notices = {*marks, *(minutes - m for m in FINAL_NOTICES_MIN if minutes - m > 0)}
+    if recommended and recommended < minutes:
+        notices.add(recommended)
+    return marks, sorted(notices)
 
 
 def read_env_file(path):
@@ -415,8 +422,10 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--model", required=True, help="provider/model or provider/model#variant, see `opencode models`")
     ap.add_argument("--variant", help="reasoning effort or other model variant, e.g. high (listed at start)")
-    ap.add_argument("--minutes", type=float, default=150)
-    ap.add_argument("--snapshot-every", type=float, default=30)
+    ap.add_argument("--minutes", type=float, default=taskinfo.MINUTES)
+    ap.add_argument("--recommended", type=float, default=taskinfo.RECOMMENDED_MINUTES,
+                    help="minute of the 'recommended time reached' notice; 0 disables it")
+    ap.add_argument("--snapshot-every", type=float, default=taskinfo.SNAPSHOT_EVERY_MINUTES)
     ap.add_argument("--env-file", help="KEY=VALUE lines, e.g. the provider API key")
     ap.add_argument("--opencode-config", help="JSON merged into the run's opencode config, e.g. a custom provider")
     ap.add_argument("--opencode", default=shutil.which("opencode") or "opencode")
@@ -459,7 +468,7 @@ def main():
     end_wall = start + a.minutes * 60
     deadline = t0 + a.minutes * 60
     (ws / ".deadline").write_text(f"{int(end_wall)}\n")
-    marks, notices = notice_marks(a.minutes, a.snapshot_every)
+    marks, notices = notice_marks(a.minutes, a.snapshot_every, a.recommended)
 
     log(f"opencode {version}, model {a.model}, {'strict' if a.strict else 'trial'} mode, {a.minutes:g} min")
     log(f"live view: http://<this machine>:{a.port}/  user opencode  password {a.password}  (also in {out / 'web.txt'})")
@@ -470,7 +479,7 @@ def main():
     def event(kind, **kw):
         events.append({"t_min": round((time.monotonic() - t0) / 60, 3), "kind": kind, **kw})
 
-    run.say(start_message(prompt, start, end_wall, a.minutes))
+    run.say(start_message(prompt, start, end_wall, a.minutes, a.recommended))
 
     resumes, stalls, end_reason = 0, 0, None
     idle_since, last_resume = None, time.monotonic()
@@ -495,8 +504,8 @@ def main():
             marks.pop(0)
         try:
             if notices and elapsed_min >= notices[0]:
-                notices.pop(0)
-                run.say(notice_message(time.time(), left), steer=True)
+                rec = a.recommended if notices.pop(0) == a.recommended else None
+                run.say(notice_message(time.time(), left, rec), steer=True)
                 event("notice", left_min=left)
                 log(f"time notice: {left} min left")
             run.reject_questions()
@@ -535,7 +544,7 @@ def main():
 
     result = {
         "tool": "opencode", "tool_version": version, "api": "v2", "model": a.model, "variant": a.variant,
-        "mode": "strict" if a.strict else "trial", "minutes": a.minutes,
+        "mode": "strict" if a.strict else "trial", "minutes": a.minutes, "recommended": a.recommended,
         "start": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start)), "start_epoch": start,
         "task_version": workspace_version.get("task_version"), "public_seed": workspace_version.get("public_seed"),
         "prompt_sha": taskinfo.prompt_sha(prompt), "machine": taskinfo.machine_info(), "events": events,

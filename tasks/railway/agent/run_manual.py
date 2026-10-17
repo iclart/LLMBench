@@ -4,7 +4,7 @@ Codex CLI, Cursor, ...) driven by a person, under the same rules as
 run_opencode.py.
 
   run_manual.py run    --workspace DIR|TAR.GZ --out RUN_DIR --tool NAME --model provider/model
-                       [--tool-version V] [--variant V] [--minutes 150] [--snapshot-every 30]
+                       [--tool-version V] [--variant V] [--minutes 105] [--recommended 90] [--snapshot-every 30]
                        [--strict [--user llmagent]] [--on-deadline CMD]
   run_manual.py attach --out RUN_DIR [--transcript FORMAT FILE] [--cost USD] [--input-tokens N] [--output-tokens N]
 
@@ -183,10 +183,10 @@ def cmd_run(a):
         u = pwd.getpwnam(a.user)
         os.chown(ws / ".deadline", u.pw_uid, u.pw_gid)
     prompt = (HERE / "PROMPT.md").read_text()
-    first = start_message(prompt, start, end_wall, a.minutes)
+    first = start_message(prompt, start, end_wall, a.minutes, a.recommended)
     (out / "prompt.txt").write_text(first)
     relay(f"提示词（{out / 'prompt.txt'}）", first)
-    marks, notices = notice_marks(a.minutes, a.snapshot_every)
+    marks, notices = notice_marks(a.minutes, a.snapshot_every, a.recommended)
     events = []
 
     def event(kind, **kw):
@@ -211,9 +211,9 @@ def cmd_run(a):
             log(f"snapshot {snapshot_name(marks[0])}")
             marks.pop(0)
         if notices and elapsed_min >= notices[0]:
-            notices.pop(0)
-            last_notice = notice_message(time.time(), left)
-            relay(f"时间提醒（还剩 {left} 分钟）", last_notice)
+            rec = a.recommended if notices.pop(0) == a.recommended else None
+            last_notice = notice_message(time.time(), left, rec)
+            relay("推荐用时已到" if rec else f"时间提醒（还剩 {left} 分钟）", last_notice)
             event("notice", left_min=left)
         ready = select.select([sys.stdin], [], [], 1.0)[0] if interactive else time.sleep(1)
         if not ready:
@@ -256,7 +256,7 @@ def cmd_run(a):
 
     run = {
         "tool": a.tool, "tool_version": a.tool_version, "manual": True, "model": a.model, "variant": a.variant,
-        "mode": "strict" if a.strict else "trial", "minutes": a.minutes,
+        "mode": "strict" if a.strict else "trial", "minutes": a.minutes, "recommended": a.recommended,
         "start": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start)), "start_epoch": start,
         "elapsed_min": round(elapsed / 60, 2), "end_reason": end_reason, "submitted": end_reason == "submitted",
         "resumes": resumes, "usage": None,
@@ -298,8 +298,10 @@ def main():
     p.add_argument("--tool-version")
     p.add_argument("--model", required=True, help="provider/model, as the harness names it")
     p.add_argument("--variant", help="reasoning effort or similar, e.g. high")
-    p.add_argument("--minutes", type=float, default=150)
-    p.add_argument("--snapshot-every", type=float, default=30)
+    p.add_argument("--minutes", type=float, default=taskinfo.MINUTES)
+    p.add_argument("--recommended", type=float, default=taskinfo.RECOMMENDED_MINUTES,
+                   help="minute of the 'recommended time reached' notice; 0 disables it")
+    p.add_argument("--snapshot-every", type=float, default=taskinfo.SNAPSHOT_EVERY_MINUTES)
     p.add_argument("--strict", action="store_true", help="official mode: dedicated account + network guard")
     p.add_argument("--user", default="llmagent")
     p.add_argument("--on-deadline", help="shell command to run when the run ends (trial mode)")
