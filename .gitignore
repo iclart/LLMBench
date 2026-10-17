@@ -1,0 +1,14 @@
+# Build trees
+/build*/
+
+# Generated data
+*.world
+*.load
+
+# Hidden workload configs and seeds are never committed (see docs/DESIGN.md).
+tasks/*/configs/hidden/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
