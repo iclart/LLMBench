@@ -40,6 +40,32 @@ ANTHROPIC_API_KEY=...
 
 `--model` 是 OpenCode 的模型 ID，格式为 `provider/model`，用 `opencode models`（或 `opencode models <provider>`）查看；列表来自 models.dev，`opencode models --refresh` 可以更新。运行器会把它同时写进本次运行配置的 `model` 和 `small_model`，避免 OpenCode 偷偷调用别家的小模型来起标题、做摘要（那部分用量不会算到被测模型头上，也会被网络限制挡住）。
 
+**推理强度（thinking effort）**用 `--variant` 指定，也可以写成 OpenCode 2 的 `--model provider/model#variant`。可选的档位取决于模型，常见的有 `none`、`low`、`medium`、`high`、`xhigh`、`max`；`opencode models` 不显示档位，运行器启动时会打印当前模型的全部档位，填了不存在的档位会直接报错退出并列出可选值。不指定时用模型的默认档位。同一个模型的不同档位在排行榜上是不同的参赛单位。
+
+自定义提供商需要自己定义档位，在 `--opencode-config` 里给模型加 `variants`（OpenCode 2 写法，`settings` 里的字段原样传给 AI SDK，OpenAI 兼容接口用 `reasoningEffort`）：
+
+```json
+{
+  "providers": {
+    "myproxy": {
+      "package": "aisdk:@ai-sdk/openai-compatible",
+      "settings": { "baseURL": "https://llm.example.com/v1", "apiKey": "{env:MYPROXY_API_KEY}" },
+      "models": {
+        "my-model": {
+          "limit": { "context": 128000, "output": 16000 },
+          "variants": [
+            { "id": "high", "settings": { "reasoningEffort": "high" } },
+            { "id": "low", "settings": { "reasoningEffort": "low" } }
+          ]
+        }
+      }
+    }
+  }
+}
+```
+
+然后用 `--model myproxy/my-model --variant high`。OpenCode 1 的写法是 `"variants": {"high": {"reasoningEffort": "high"}}`（对象而不是数组）。
+
 **API 密钥只能用 `--env-file` 传入。**运行器给每次运行单独的 OpenCode 配置目录，所以你用 `opencode auth` / `opencode providers login` 保存的凭据它看不到。常见的环境变量：`ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、`OPENROUTER_API_KEY`、`DEEPSEEK_API_KEY` 等，以 OpenCode 对应提供商的要求为准。
 
 用 OpenCode 2 时，运行器会把 Agent 执行命令的环境换成只含 `PATH`、`HOME` 等少数变量的最小环境，Agent 在 shell 里读不到这些密钥。OpenCode 1 做不到这一点（它的服务模式不支持替换 shell 环境），Agent 理论上可以用 `env` 看到密钥。无论哪个版本，生成报告时都会把 `--env-file` 里的值从页面中抹掉。

@@ -216,12 +216,25 @@ class Run:
         for _ in range(60):
             try:
                 models = self.api.call("GET", "/api/model").get("data") or []
-                if any(m.get("providerID") == provider and m.get("id") == model for m in models):
+                info = next((m for m in models if m.get("providerID") == provider and m.get("id") == model), None)
+                if info:
+                    self.check_variant(info)
                     return
             except (OSError, ValueError, urllib.error.URLError):
                 pass
             time.sleep(1)
         log(f"warning: OpenCode does not list {self.a.model}; check the name with `opencode models`")
+
+    def check_variant(self, info):
+        """An unknown variant only fails at the first prompt, so check it up front."""
+        if "variants" not in info:
+            return
+        names = [v.get("id") for v in info["variants"] or [] if v.get("id")]
+        log(f"variants of {self.a.model}: {', '.join(names) or '(none)'}; using {self.a.variant or 'the default'}")
+        if self.a.variant and self.a.variant not in names:
+            self.stop()
+            sys.exit(f"{self.a.model} has no variant {self.a.variant!r}; available: {', '.join(names) or 'none'}. "
+                     f"Custom variants go in --opencode-config (see the README).")
 
     def create_session(self):
         provider, _, model = self.a.model.partition("/")
@@ -400,8 +413,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--workspace", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--model", required=True, help="provider/model, see `opencode models`")
-    ap.add_argument("--variant", help="provider-specific reasoning effort")
+    ap.add_argument("--model", required=True, help="provider/model or provider/model#variant, see `opencode models`")
+    ap.add_argument("--variant", help="reasoning effort or other model variant, e.g. high (listed at start)")
     ap.add_argument("--minutes", type=float, default=150)
     ap.add_argument("--snapshot-every", type=float, default=30)
     ap.add_argument("--env-file", help="KEY=VALUE lines, e.g. the provider API key")
@@ -415,6 +428,11 @@ def main():
     ap.add_argument("--user", default="llmagent", help="the dedicated account for --strict")
     a = ap.parse_args()
     a.password = a.password or secrets.token_urlsafe(12)
+    if "#" in a.model:  # OpenCode 2 style: provider/model#variant
+        a.model, _, variant = a.model.partition("#")
+        if a.variant and a.variant != variant:
+            sys.exit(f"conflicting variants: #{variant} in --model and --variant {a.variant}")
+        a.variant = variant
 
     ver = subprocess.run([a.opencode, "--version"], capture_output=True, text=True)
     version = ver.stdout.strip().removeprefix("opencode").strip().lstrip("v")
