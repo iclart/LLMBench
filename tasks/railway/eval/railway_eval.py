@@ -495,8 +495,9 @@ def summary(result):
     for sc in SCENARIOS:
         g = s["gates"].get(sc)
         if g:
-            lines.append(f"  {sc:16} transport {s['transport_by_scenario'][sc]:6.1f}, satisfaction "
-                         f"{100 * g['ratio']:5.1f}% of the strong reference's")
+            lines.append(f"  {sc:16} transport {s['transport_by_scenario'][sc]:5.1f} (passenger-minutes "
+                         f"{100 * s['transport_ratio'][sc]:5.1f}%, satisfaction {100 * g['ratio']:5.1f}% of the "
+                         f"strong reference's)")
     if result["flags"]:
         lines.append(f"NEEDS REVIEW: {len(result['flags'])} suspicious construct(s), e.g. "
                      f"{result['flags'][0]['file']}:{result['flags'][0]['line']} ({result['flags'][0]['reason']})")

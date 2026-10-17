@@ -6,6 +6,10 @@
 #   make bench S=spring T=16     one concurrent run and its verdict
 #   make tickets S=daily N=40    the tickets your engine issues for the first N
 #                   intents (single thread, checked like verify)
+#   make score      estimated score on the public workloads, with the official
+#                   formula (TASK.md 9); takes a few minutes
+#   make tsan       ThreadSanitizer build on small workloads, 4 threads: the
+#                   official evaluation scores 0 for any data race
 #   make time       time left before the forced submission (check and bench
 #                   print it too, as their last line)
 #   make submit     submit now (ends the session; src/ can no longer change)
@@ -20,7 +24,7 @@ T ?= 4
 N ?= 40
 WORLD := data/world.world
 
-.PHONY: all check bench tickets time submit clean FORCE
+.PHONY: all check bench tickets score tsan time submit clean FORCE
 
 # Prints the time left before the forced submission, if the runner set one.
 TIME_LEFT = if [ -f .deadline ]; then \
@@ -70,6 +74,22 @@ bench: all
 
 tickets: all
 	./build/railrun tickets $(WORLD) data/$(S).load --limit $(N)
+
+score: build/railbench
+	@status=0; python3 bin/railscore.py || status=1; $(TIME_LEFT); exit $$status
+
+build/railbench_tsan: $(STAMP) lib/librailbench_tsan.a
+	$(CXX) $(CXXFLAGS) -fsanitize=thread -g -Iinclude $(SRC) lib/librailbench_tsan.a -o $@
+
+tsan: build/railbench_tsan
+	@status=0; for s in $(SCENARIOS); do \
+	  echo "== $$s: ThreadSanitizer, 4 threads"; \
+	  TSAN_OPTIONS="halt_on_error=1 exitcode=66" ./build/railbench_tsan $(WORLD) data/tsan_$$s.load 4 build/tsan_$$s.log && \
+	  bin/railjudge $(WORLD) data/tsan_$$s.load data/tsan_$$s.answers build/tsan_$$s.log --json build/tsan_$$s.json \
+	    || { status=1; break; }; \
+	done; \
+	if [ $$status -eq 0 ]; then echo "make tsan: no data race found"; else echo "make tsan: FAILED"; fi; \
+	$(TIME_LEFT); exit $$status
 
 time:
 	@$(TIME_LEFT)

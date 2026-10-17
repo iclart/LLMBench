@@ -165,12 +165,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     list(APPEND REPORT_SMOKE_ARGS --strong)
   endif()
   add_test(NAME rail_report_smoke COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/report_smoke.py ${REPORT_SMOKE_ARGS})
-  # The packaged workspace: whitelist, stub builds, baseline passes `make check`.
+  # The packaged workspace: whitelist, stub builds, baseline passes make check/tsan/score.
   if(RAIL_HAVE_STRONG)
     set(PACKAGE_ANSWERS strong)
+    set(PACKAGE_ANCHORS measure)
   else()
     set(PACKAGE_ANSWERS baseline)
+    set(PACKAGE_ANCHORS none)
   endif()
   add_test(NAME rail_package_selftest COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tasks/railway/agent/package_workspace.py
-           --build ${PROJECT_BINARY_DIR} --out ${DATA}/package_selftest/workspace --answers-engine ${PACKAGE_ANSWERS} --selftest)
+           --build ${PROJECT_BINARY_DIR} --out ${DATA}/package_selftest/workspace --answers-engine ${PACKAGE_ANSWERS}
+           --anchors ${PACKAGE_ANCHORS} --intents 3000 --selftest)
 endif()

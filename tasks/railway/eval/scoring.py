@@ -10,8 +10,9 @@ main phase's booking quality from railjudge.
   performance = mean over scenarios x thread counts of
                 70% throughput + 30% p99 latency, each log-interpolated:
                 0 at the baseline, 100 at the strong reference, not capped
-  transport   = mean over scenarios of 100 x passenger-minutes carried /
-                the strong reference's (not capped)
+  transport   = mean over scenarios of a score for r = passenger-minutes
+                carried / the strong reference's: 70 at r = 1, 0 at r <= 0.93,
+                100 at r >= 1.03, linear in between
   preference  = mean over scenarios of 100 x window and together rates /
                 the strong reference's
   gate        = a scenario whose satisfaction (purchases served) falls below
@@ -25,6 +26,8 @@ SCENARIOS = ["daily", "spring", "refund_wave"]
 PERF_WEIGHT, TRANSPORT_WEIGHT, PREF_WEIGHT = 0.75, 0.15, 0.10
 THROUGHPUT_WEIGHT, LATENCY_WEIGHT = 0.7, 0.3
 SATISFACTION_GATE = 0.85
+# Transport: (ratio to the strong reference, score) points, linear between.
+TRANSPORT_FLOOR, TRANSPORT_PAR, TRANSPORT_CEIL = (0.93, 0.0), (1.0, 70.0), (1.03, 100.0)
 
 
 def log_score(x, base, strong):
@@ -55,9 +58,19 @@ def preference_score(quiet, strong_quiet):
     return 100.0 * sum(parts) / len(parts)
 
 
-def transport_score(quality, strong_quality):
+def transport_ratio(quality, strong_quality):
     ref = strong_quality["passenger_minutes"]
-    return 100.0 * quality["passenger_minutes"] / ref if ref > 0 else 100.0
+    return quality["passenger_minutes"] / ref if ref > 0 else 1.0
+
+
+def transport_score(quality, strong_quality):
+    r = transport_ratio(quality, strong_quality)
+    (r0, s0), (r1, s1), (r2, s2) = TRANSPORT_FLOOR, TRANSPORT_PAR, TRANSPORT_CEIL
+    if r <= r0:
+        return s0
+    if r <= r1:
+        return s0 + (s1 - s0) * (r - r0) / (r1 - r0)
+    return min(s2, s1 + (s2 - s1) * (r - r1) / (r2 - r1))
 
 
 def satisfaction_ratio(quality, strong_quality):
@@ -74,7 +87,7 @@ def score(measurements, anchors, threads, failed=(), fatal=False, scenarios=SCEN
     stores in its result.
     """
     quality_threads = 1 if 1 in threads else min(threads)
-    per, perf_parts, transport_parts, pref_parts, gates = {}, [], [], [], {}
+    per, perf_parts, transport_parts, pref_parts, gates, ratios = {}, [], [], [], {}, {}
     for sc in scenarios:
         qkey = f"{sc}/t{quality_threads}"
         qm = measurements.get(qkey, {})
@@ -96,6 +109,8 @@ def score(measurements, anchors, threads, failed=(), fatal=False, scenarios=SCEN
                 s, thr, lat = measurement_score(m, anchors["baseline"][key], anchors["strong"][key])
                 per[key] = {"score": s, "throughput_score": thr, "latency_score": lat}
             perf_parts.append(per[key]["score"])
+        ratios[sc] = (transport_ratio(qm["quality"], anchors["strong"][qkey]["quality"])
+                      if gate is not None else None)
         if usable:
             transport_parts.append(transport_score(qm["quality"], anchors["strong"][qkey]["quality"])
                                    if "quality" in qm else 0.0)
@@ -109,5 +124,5 @@ def score(measurements, anchors, threads, failed=(), fatal=False, scenarios=SCEN
     total = 0.0 if fatal else PERF_WEIGHT * perf + TRANSPORT_WEIGHT * transport + PREF_WEIGHT * pref
     return {"total": total, "performance": perf, "transport": transport, "preference": pref,
             "measurements": per, "gates": gates, "quality_threads": quality_threads,
-            "transport_by_scenario": dict(zip(scenarios, transport_parts)),
+            "transport_by_scenario": dict(zip(scenarios, transport_parts)), "transport_ratio": ratios,
             "preference_by_scenario": dict(zip(scenarios, pref_parts))}
