@@ -14,13 +14,16 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build -j4
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure -j4 --timeout 1200
+      # Sanitizer builds skip the 1- and 16-thread harness runs (the 4-thread
+      # ones cover the same code) and the orchestrator smoke test, whose
+      # address-space cap is incompatible with sanitizer shadow memory.
       - name: Test under ASan and UBSan
         run: |
           cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all"
           cmake --build build-asan -j4
-          ctest --test-dir build-asan --output-on-failure
+          ctest --test-dir build-asan --output-on-failure -j4 --timeout 1800 -E "_t1$|_t16$|rail_eval_smoke"
       - name: Stub compiles with the official contestant flags
         working-directory: tasks/railway
         run: g++ -O2 -std=c++20 -pthread -Wall -Wextra -Wpedantic -Werror -Iinclude -c stub/solution.cpp -o /dev/null
@@ -35,7 +38,7 @@ jobs:
           cmake --build build-tsan -j4
       # Concurrent runs must be race-free; the data-race mutant must be rejected.
       - name: Concurrent tests under TSan
-        run: ctest --test-dir build-tsan --output-on-failure -R "rail_bench_.*_t4|rail_mutant_data_race"
+        run: ctest --test-dir build-tsan --output-on-failure -j4 --timeout 1800 -R "rail_bench_.*_t4|rail_mutant_data_race"
 
   windows-mingw:
     runs-on: windows-2022
@@ -59,7 +62,7 @@ jobs:
           cmake --build build
       # Includes the golden-hash check: generator output must match Linux byte for byte.
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure -j4 --timeout 1200
       - name: Stub compiles with the official contestant flags
         working-directory: tasks/railway
         run: g++ -O2 -std=c++20 -pthread -Wall -Wextra -Wpedantic -Werror -Iinclude -c stub/solution.cpp -o stub.o

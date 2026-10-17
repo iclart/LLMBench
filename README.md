@@ -8,7 +8,7 @@
 
 | 题目 | 目录 | 状态 |
 |---|---|---|
-| 铁路订票系统：高并发、区间票、换乘规划、选座 | [`tasks/railway/`](tasks/railway/) | 里程碑 3：并发压测器与裁判 |
+| 铁路订票系统：高并发、区间票、换乘规划、选座 | [`tasks/railway/`](tasks/railway/) | 里程碑 5：打包与运行工具就绪，待试跑 |
 
 ## 铁路订票系统
 
@@ -16,6 +16,7 @@
 - [`include/ticket_system.h`](tasks/railway/include/ticket_system.h)：选手要实现的 C++ 接口。
 - `tools/`：负载生成器 `railgen`、单线程驱动 `railrun`、并发压测器 `railbench`、裁判 `railjudge` 与共用代码。
 - `tests/mutants/`：注入典型错误的变异引擎，裁判必须全部抓到。
+- `eval/`：正式评测编排；`agent/`：打包工作区、用 OpenCode 运行 Agent（快照、提前交卷、强制收卷），见 [`agent/README.md`](tasks/railway/agent/README.md)。
 - `reference/baseline/`：基线参考实现（性能分 0 分锚点）。
 - `reference/oracle/`：穷举式判定基准，只用于交叉比对 `query`。
 - `configs/public/`：公开负载配置（规模约为隐藏负载的 1/10）。
