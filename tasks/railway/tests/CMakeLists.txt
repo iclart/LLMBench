@@ -55,3 +55,77 @@ foreach(e IN LISTS CROSSCHECK_ENGINES)
                    --random 800 7 --expect ${DATA}/oracle.answers)
   set_tests_properties(rail_crosscheck_${e} PROPERTIES FIXTURES_REQUIRED "rail_data;rail_answers")
 endforeach()
+
+# ---- concurrent harness + judge
+# Smaller workloads for railbench runs; reference answers from the baseline,
+# which itself is cross-checked against the oracle above.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(JUDGE_CASE ${CMAKE_CURRENT_SOURCE_DIR}/judge_case.py)
+if(RAIL_TSAN)
+  set(SMALL_INTENTS 4000)  # everything runs 5-15x slower under TSan
+else()
+  set(SMALL_INTENTS 20000)
+endif()
+foreach(s IN LISTS SCENARIOS)
+  add_test(NAME rail_gen_small_${s}
+           COMMAND railgen load ${DATA}/pub.world ${CFG}/${s}.cfg 3 ${DATA}/small_${s}.load
+                   --set intents=${SMALL_INTENTS} --set quiet_intents=1000)
+  set_tests_properties(rail_gen_small_${s} PROPERTIES FIXTURES_REQUIRED rail_world FIXTURES_SETUP rail_small_${s})
+  add_test(NAME rail_answers_small_${s}
+           COMMAND railrun_baseline query ${DATA}/pub.world ${DATA}/small_${s}.load ${DATA}/small_${s}.answers)
+  set_tests_properties(rail_answers_small_${s} PROPERTIES
+                       FIXTURES_REQUIRED rail_small_${s} FIXTURES_SETUP rail_small_answers_${s})
+endforeach()
+
+# rail_judge_case(<name> <bench target> <scenario> <threads> <expect>)
+function(rail_judge_case name bench scenario threads expect)
+  add_test(NAME ${name}
+           COMMAND ${Python3_EXECUTABLE} ${JUDGE_CASE} --bench $<TARGET_FILE:${bench}> --judge $<TARGET_FILE:railjudge>
+                   --world ${DATA}/pub.world --load ${DATA}/small_${scenario}.load
+                   --answers ${DATA}/small_${scenario}.answers --threads ${threads}
+                   --log ${DATA}/${name}.log --expect ${expect})
+  set_tests_properties(${name} PROPERTIES FIXTURES_REQUIRED "rail_small_${scenario};rail_small_answers_${scenario}")
+endfunction()
+
+set(BENCH_ENGINES baseline)
+if(RAIL_HAVE_STRONG)
+  list(APPEND BENCH_ENGINES strong)
+endif()
+foreach(e IN LISTS BENCH_ENGINES)
+  foreach(s IN LISTS SCENARIOS)
+    foreach(t 1 4 16)
+      rail_judge_case(rail_bench_${e}_${s}_t${t} railbench_${e} ${s} ${t} pass)
+    endforeach()
+  endforeach()
+endforeach()
+
+# ---- mutation tests: every broken engine must be caught.
+function(add_rail_mutant name id)
+  add_executable(railbench_mutant_${name} ../tools/bench/main.cpp mutants/mutant.cpp)
+  target_compile_definitions(railbench_mutant_${name} PRIVATE RAIL_MUTANT=${id})
+  target_link_libraries(railbench_mutant_${name} PRIVATE railcommon Threads::Threads)
+endfunction()
+add_rail_mutant(steal_seats 1)
+add_rail_mutant(fake_sold_out 2)
+add_rail_mutant(partial_book 3)
+add_rail_mutant(data_race 4)
+add_rail_mutant(double_refund 5)
+add_rail_mutant(wrong_query 6)
+add_rail_mutant(bad_seat 7)
+add_rail_mutant(busy_sold_out 8)
+add_rail_mutant(leaky_refund 9)
+
+rail_judge_case(rail_mutant_steal_seats railbench_mutant_steal_seats spring 4 fail:oversell)
+rail_judge_case(rail_mutant_fake_sold_out railbench_mutant_fake_sold_out daily 4 fail:false_negative)
+# Leaked seats only surface in the audit, and only where multi-leg books fail (spring).
+rail_judge_case(rail_mutant_partial_book railbench_mutant_partial_book spring 4 fail:false_negative)
+rail_judge_case(rail_mutant_leaky_refund railbench_mutant_leaky_refund refund_wave 4 fail:false_negative)
+rail_judge_case(rail_mutant_double_refund railbench_mutant_double_refund daily 4 fail:refund)
+rail_judge_case(rail_mutant_wrong_query railbench_mutant_wrong_query daily 4 fail:query)
+rail_judge_case(rail_mutant_bad_seat railbench_mutant_bad_seat daily 4 fail:seat)
+rail_judge_case(rail_mutant_busy_sold_out railbench_mutant_busy_sold_out daily 4 fail:false_negative)
+# Only wrong under contention: a single thread never sees another call running.
+rail_judge_case(rail_mutant_busy_sold_out_t1 railbench_mutant_busy_sold_out daily 1 pass)
+if(RAIL_TSAN)
+  rail_judge_case(rail_mutant_data_race railbench_mutant_data_race daily 4 bench-fail)
+endif()

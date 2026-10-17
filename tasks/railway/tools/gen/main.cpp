@@ -1,7 +1,7 @@
 // railgen - deterministic world and workload generator for the railway task.
 //
-//   railgen world <world.cfg> <seed> <out.world>
-//   railgen load  <in.world> <load.cfg> <seed> <out.load>
+//   railgen world <world.cfg> <seed> <out.world> [--set key=value]...
+//   railgen load  <in.world> <load.cfg> <seed> <out.load> [--set key=value]...
 //   railgen stats <in.world> [<in.load>]
 #include <algorithm>
 #include <cstdio>
@@ -76,8 +76,8 @@ void print_load_stats(const Workload& load) {
 int usage() {
   std::fprintf(stderr,
                "usage:\n"
-               "  railgen world <world.cfg> <seed> <out.world>\n"
-               "  railgen load  <in.world> <load.cfg> <seed> <out.load>\n"
+               "  railgen world <world.cfg> <seed> <out.world> [--set key=value]...\n"
+               "  railgen load  <in.world> <load.cfg> <seed> <out.load> [--set key=value]...\n"
                "  railgen stats <in.world> [<in.load>]\n");
   return 2;
 }
@@ -86,16 +86,28 @@ int usage() {
 
 int main(int argc, char** argv) {
   std::ios::sync_with_stdio(false);
-  const std::vector<std::string> args(argv + 1, argv + argc);
+  std::vector<std::string> args, sets;
+  for (int i = 1; i < argc; ++i) {
+    if (std::string(argv[i]) == "--set" && i + 1 < argc) {
+      sets.push_back(argv[++i]);
+    } else {
+      args.push_back(argv[i]);
+    }
+  }
   if (args.empty()) return usage();
+  auto load_config = [&](const std::string& path) {
+    Config cfg = Config::load(path);
+    for (const auto& s : sets) cfg.set(s);
+    return cfg;
+  };
   try {
     if (args[0] == "world" && args.size() == 4) {
-      Config cfg = Config::load(args[1]);
+      Config cfg = load_config(args[1]);
       save_world(args[3], generate_world(cfg, parse_seed(args[2])));
     } else if (args[0] == "load" && args.size() == 5) {
       const World world = load_world(args[1]);
       validate_world(world);
-      Config cfg = Config::load(args[2]);
+      Config cfg = load_config(args[2]);
       save_workload(args[4], generate_workload(world, cfg, parse_seed(args[3])));
     } else if (args[0] == "stats" && (args.size() == 2 || args.size() == 3)) {
       const World world = load_world(args[1]);

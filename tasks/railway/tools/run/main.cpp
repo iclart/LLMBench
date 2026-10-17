@@ -21,6 +21,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "answers.h"
 #include "rng.h"
 #include "rules.h"
 #include "seats.h"
@@ -81,24 +82,6 @@ double seconds_since(Clock::time_point t) { return std::chrono::duration<double>
 
 // ---------------------------------------------------------------- query mode
 
-void append_answer(std::string& out, rail::Status st, const rail::QueryResult& r) {
-  out += std::to_string(static_cast<int>(st));
-  if (st == rail::Status::Ok) {
-    out += ' ';
-    out += std::to_string(r.count);
-    for (uint32_t i = 0; i < r.count; ++i) {
-      const auto& it = r.items[i];
-      out += " |";
-      for (uint32_t j = 0; j < it.leg_count && j < static_cast<uint32_t>(rail::kMaxLegs); ++j) {
-        const auto& l = it.legs[j];
-        out += ' ' + std::to_string(l.train) + ' ' + std::to_string(l.day) + ' ' + std::to_string(l.from) + ' ' +
-               std::to_string(l.to) + ' ' + std::to_string(l.depart) + ' ' + std::to_string(l.arrive);
-      }
-    }
-  }
-  out += '\n';
-}
-
 // Random queries for cross-checking: half uniform, half built from a random
 // 1-3 leg ride so that multi-leg answers are common.
 std::vector<rail::QueryRequest> random_queries(const World& w, uint64_t count, uint64_t seed) {
@@ -156,6 +139,7 @@ int run_query_mode(const Options& o, const World& world, rail::TicketSystem& sys
     const rail::Status st = sys.query(q, &r);
     busy += seconds_since(t0);
     append_answer(out, st, r);
+    out += '\n';
   }
   std::fprintf(stderr, "%zu queries in %.3f s (%.1f us/query)\n", qs.size(), busy, busy * 1e6 / double(qs.size()));
   {

@@ -25,6 +25,18 @@ jobs:
         working-directory: tasks/railway
         run: g++ -O2 -std=c++20 -pthread -Wall -Wextra -Wpedantic -Werror -Iinclude -c stub/solution.cpp -o /dev/null
 
+  linux-tsan:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build with ThreadSanitizer
+        run: |
+          cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo -DRAIL_TSAN=ON
+          cmake --build build-tsan -j4
+      # Concurrent runs must be race-free; the data-race mutant must be rejected.
+      - name: Concurrent tests under TSan
+        run: ctest --test-dir build-tsan --output-on-failure -R "rail_bench_.*_t4|rail_mutant_data_race"
+
   windows-mingw:
     runs-on: windows-2022
     defaults:
@@ -40,6 +52,7 @@ jobs:
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-python
       - name: Build
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release

@@ -12,5 +12,12 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
+# ThreadSanitizer build: any data race in an engine fails its railbench run.
+option(RAIL_TSAN "Build everything with -fsanitize=thread" OFF)
+if(RAIL_TSAN)
+  add_compile_options(-fsanitize=thread -g)
+  add_link_options(-fsanitize=thread)
+endif()
+
 enable_testing()
 add_subdirectory(tasks/railway)

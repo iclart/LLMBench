@@ -22,6 +22,9 @@ class Config {
   int64_t get(const std::string& key, int64_t lo, int64_t hi);
   bool has(const std::string& key) const { return values_.count(key) != 0; }
 
+  // Overrides an existing key from a `key=value` string (e.g. railgen --set).
+  void set(const std::string& assignment);
+
   // Throws if some key in the file was never read.
   void check_all_used() const;
 

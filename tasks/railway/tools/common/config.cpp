@@ -56,6 +56,15 @@ Config Config::parse(const std::string& text, const std::string& origin) {
   return cfg;
 }
 
+void Config::set(const std::string& assignment) {
+  const auto eq = assignment.find('=');
+  if (eq == std::string::npos) throw std::runtime_error("--set expects key=value, got " + assignment);
+  const std::string key = trim(assignment.substr(0, eq));
+  if (!values_.count(key)) throw std::runtime_error(origin_ + ": --set of unknown key " + key);
+  const Config one = parse(key + " = " + assignment.substr(eq + 1), "--set");
+  values_[key] = one.values_.at(key);
+}
+
 int64_t Config::get(const std::string& key) {
   const auto it = values_.find(key);
   if (it == values_.end()) throw std::runtime_error(origin_ + ": missing key " + key);
