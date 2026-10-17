@@ -9,7 +9,8 @@
 // overlapping calls is unknown:
 //
 // - query: the answer must equal the reference answer byte for byte.
-// - book: Invalid exactly for malformed requests; seats of an Ok order must
+// - book: Invalid exactly for malformed requests; Withheld (a sales policy)
+//   is allowed for any valid request; seats of an Ok order must
 //   exist, belong to the class and be distinct within a leg; order ids are
 //   nonzero and unique.
 // - oversell: two orders holding the same seat over overlapping intervals
@@ -31,9 +32,11 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "answers.h"
+#include "quality.h"
 #include "benchlog.h"
 #include "rules.h"
 #include "seats.h"
@@ -65,6 +68,7 @@ struct LegInfo {
 
 struct Order {
   uint64_t book_start, book_end;
+  Phase phase;
   uint64_t refund_start = kNever, refund_end = kNever;  // of the successful refund
   uint32_t leg_count = 0;
   LegInfo legs[rail::kMaxLegs];
@@ -125,12 +129,14 @@ class Judge {
     check_coverage();
     check_oversell();
     check_false_negatives();
+    measure_quality();
   }
 
   // ---- metrics
   // Indexed by Phase.
   uint64_t window_wanted[3] = {}, window_got[3] = {}, together_wanted[3] = {}, together_got[3] = {};
-  uint64_t books_ok[3] = {}, sold_out[3] = {};
+  uint64_t books_ok[3] = {}, sold_out[3] = {}, withheld[3] = {};
+  Quality quality;  // main phase (quality.h)
 
  private:
   void map_answers() {
@@ -249,6 +255,13 @@ class Judge {
       legs[j].mask = ((uint64_t(1) << rl.to_index) - 1) & ~((uint64_t(1) << rl.from_index) - 1);
     }
     const int ph = int(e.phase);
+    if (st == rail::Status::Withheld) {  // a sales policy: allowed, nothing changed
+      ++withheld[ph];
+      if (e.phase == Phase::Main) {
+        for (uint32_t j = 0; j < b.leg_count; ++j) quality.unmet.insert({legs[j].td, int(b.seat_class)});
+      }
+      return;
+    }
     if (st == rail::Status::SoldOut) {
       ++sold_out[ph];
       SoldOut so{e.start, e.start + e.dur, b.seat_class, b.passenger_count, b.leg_count, {}, &e};
@@ -269,7 +282,9 @@ class Judge {
       return;
     }
     ++books_ok[ph];
+    if (e.phase == Phase::Main && in && in->kind == IntentKind::Purchase) purchased_.insert(e.intent);
     Order o{};
+    o.phase = e.phase;
     o.book_start = e.start;
     o.book_end = e.start + e.dur;
     o.leg_count = b.leg_count;
@@ -397,7 +412,7 @@ class Judge {
     for (const SoldOut& so : sold_outs_) {
       const ClassInfo& ci = class_info(so.cls);
       bool all_enough = true;
-      for (uint32_t j = 0; j < so.leg_count && all_enough; ++j) {
+      for (uint32_t j = 0; j < so.leg_count; ++j) {
         const auto* seats = seats_[so.legs[j].td].empty() ? nullptr : &seats_[so.legs[j].td];
         uint32_t free = 0;
         for (int k = ci.first_seat; k < ci.first_seat + ci.seats(); ++k) {
@@ -416,12 +431,36 @@ class Judge {
           free += !maybe_taken;
           if (free >= so.passengers) break;
         }
-        all_enough = free >= so.passengers;
+        // A leg that may have been short is where the demand went unmet.
+        if (free < so.passengers && so.ev->phase == Phase::Main) quality.unmet.insert({so.legs[j].td, int(so.cls)});
+        all_enough = all_enough && free >= so.passengers;
       }
       if (all_enough) {
         err_.add("false_negative", where(*so.ev) + ": SoldOut although every leg certainly had enough free seats");
       }
     }
+  }
+
+  // Satisfaction of main-phase purchases; utilization of the (train-day,
+  // class) pairs that turned someone down, from the main-phase orders still
+  // live when the main phase ended.
+  void measure_quality() {
+    for (size_t i = 0; i < load_.intents.size(); ++i) {
+      if (load_.intents[i].kind != IntentKind::Purchase || answer_of_[0][i] < 0) continue;
+      quality.purchases += !answers_[answer_of_[0][i]].items.empty();
+    }
+    quality.purchases_ok = purchased_.size();
+    quality.sold_out = sold_out[int(Phase::Main)];
+    quality.withheld = withheld[int(Phase::Main)];
+    quality.measure(w_, [&](uint32_t td, int seat) {
+      uint64_t mask = 0;
+      if (seats_[td].empty()) return mask;
+      for (const Hold& h : seats_[td][seat]) {
+        const Order& o = orders_[h.order];
+        if (o.phase == Phase::Main && o.refund_start == kNever) mask |= h.mask;
+      }
+      return mask;
+    });
   }
 
   std::vector<std::vector<Hold>>& seats_of(uint32_t td) {
@@ -437,6 +476,7 @@ class Judge {
   Errors& err_;
 
   std::vector<int64_t> answer_of_[2];
+  std::unordered_set<uint32_t> purchased_;  // main-phase purchase intents that got a ticket
   uint64_t queries_seen_[2] = {};
   std::vector<Order> orders_;
   std::unordered_map<uint64_t, uint32_t> order_index_;
@@ -546,7 +586,7 @@ int run(int argc, char** argv) {
   std::string j = "{\n";
   j += "  \"ok\": " + std::string(errors.any() ? "false" : "true") + ",\n";
   j += "  \"threads\": " + std::to_string(log.threads) + ",\n";
-  char buf[256];
+  char buf[512];
   std::snprintf(buf, sizeof buf, "  \"init_s\": %.6f,\n  \"main_s\": %.6f,\n  \"quiet_s\": %.6f,\n  \"throughput\": %.1f,\n",
                 double(log.init_ns) / 1e9, double(log.main_ns) / 1e9, double(log.quiet_ns) / 1e9, throughput);
   j += buf;
@@ -558,12 +598,25 @@ int run(int argc, char** argv) {
   j += "  \"timeline\": {\"bins\": " + std::to_string(kTimelineBins) + ", \"completed\": " + counts_json(timeline) + "},\n";
   for (int ph = 0; ph < 2; ++ph) {
     std::snprintf(buf, sizeof buf,
-                  "  \"%s\": {\"books_ok\": %llu, \"sold_out\": %llu, \"window_rate\": %.4f, \"window_wanted\": %llu, "
-                  "\"together_rate\": %.4f, \"together_wanted\": %llu},\n",
+                  "  \"%s\": {\"books_ok\": %llu, \"sold_out\": %llu, \"withheld\": %llu, \"window_rate\": %.4f, "
+                  "\"window_wanted\": %llu, \"together_rate\": %.4f, \"together_wanted\": %llu},\n",
                   ph ? "quiet" : "main", (unsigned long long)judge.books_ok[ph], (unsigned long long)judge.sold_out[ph],
+                  (unsigned long long)judge.withheld[ph],
                   ratio(judge.window_got[ph], judge.window_wanted[ph]), (unsigned long long)judge.window_wanted[ph],
                   ratio(judge.together_got[ph], judge.together_wanted[ph]),
                   (unsigned long long)judge.together_wanted[ph]);
+    j += buf;
+  }
+  {
+    const Quality& qu = judge.quality;
+    char util[32] = "null";
+    if (qu.utilization() >= 0) std::snprintf(util, sizeof util, "%.6f", qu.utilization());
+    std::snprintf(buf, sizeof buf,
+                  "  \"quality\": {\"purchases\": %llu, \"purchases_ok\": %llu, \"satisfaction\": %.6f, "
+                  "\"unmet_train_classes\": %zu, \"sold_seat_minutes\": %lld, \"capacity_seat_minutes\": %lld, "
+                  "\"utilization\": %s},\n",
+                  (unsigned long long)qu.purchases, (unsigned long long)qu.purchases_ok, qu.satisfaction(),
+                  qu.unmet.size(), (long long)qu.sold_minutes, (long long)qu.capacity_minutes, util);
     j += buf;
   }
   j += "  \"error_counts\": {";

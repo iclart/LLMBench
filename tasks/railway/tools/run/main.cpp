@@ -186,7 +186,7 @@ struct VerifyError : std::runtime_error {
 
 struct Stats {
   uint64_t queries = 0, books = 0, sold_out = 0, withheld = 0, refunds = 0, invalid = 0;
-  uint64_t purchases = 0, purchases_ok = 0;
+  uint64_t purchases = 0, purchases_ok = 0, bookable = 0;  // bookable: the query found an itinerary
   Quality quality;  // purchases, satisfaction and utilization (main phase)
   uint64_t window_wanted = 0, window_got = 0, together_wanted = 0, together_got = 0;
   double busy = 0;
@@ -207,7 +207,7 @@ class Verifier {
 
   // Utilization of the turned-down (train-day, class) pairs, from the seats held now.
   void measure(const World& w, Stats& st) {
-    st.quality.purchases = st.purchases;
+    st.quality.purchases = st.bookable;
     st.quality.purchases_ok = st.purchases_ok;
     st.quality.sold_out = st.sold_out;
     st.quality.withheld = st.withheld;
@@ -262,6 +262,7 @@ class Verifier {
         rail::QueryResult r{};
         const rail::Status s = timed_query(in.query, &r, st);
         check_query(in.query, s, r);
+        st.bookable += r.count > 0;
         for (uint32_t i = 0; i < r.count; ++i) {
           rail::BookRequest b{};
           b.leg_count = r.items[i].leg_count;

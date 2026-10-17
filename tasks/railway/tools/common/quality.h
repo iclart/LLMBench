@@ -1,7 +1,8 @@
 // Booking quality (TASK.md 6): how many purchases succeed, and how much of the
 // capacity of contested train-days is sold. Shared by railjudge and railrun.
 //
-// Satisfaction = purchases that got a ticket / purchase intents.
+// Satisfaction = purchases that got a ticket / purchase intents whose query
+// found at least one itinerary (the others could never be served).
 // Utilization  = seat-minutes sold / seat-minutes on sale, over the
 // (train-day, class) pairs where some book was turned down for lack of seats
 // on that train-day (SoldOut, counting only the legs that were short) or was
