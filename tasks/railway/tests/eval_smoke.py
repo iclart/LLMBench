@@ -16,6 +16,10 @@ import textwrap
 from pathlib import Path
 
 TASK = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(TASK / "eval"))
+import scoring  # noqa: E402
+
+FAILED_TOTAL = scoring.PERF_WEIGHT * scoring.PERF_FLOOR  # every measurement failed, nothing else scored
 
 
 def main():
@@ -89,7 +93,8 @@ def main():
     run("evaluate", "--season", str(season), "--src", str(subs / "stub"), "--out", str(work / "stub.json"), "--lite")
     r = json.loads((work / "stub.json").read_text())
     failed = [sc for sc, s in r["scenarios"].items() if s.get("failure")]
-    if len(failed) != 3 or r["scores"]["total"] != 0 or r["scores"]["functional"] != 0:
+    # Failed measurements score the performance floor, so the total is negative.
+    if len(failed) != 3 or abs(r["scores"]["total"] - FAILED_TOTAL) > 1e-9 or r["scores"]["functional"] != 0:
         sys.exit(f"stub should fail every scenario and every functional category: {r['scenarios']}, "
                  f"functional {r['scores']['functional']}")
 
@@ -99,9 +104,10 @@ def main():
     if r["fatal"] or any(s.get("failure") for s in r["scenarios"].values()):
         sys.exit(f"withholding is legal and must pass the judge: {r['fatal']} {r['scenarios']}")
     gates = r["scores"]["gates"]
-    # Refusing to sell is legal, so only the functional part (not tied to a scenario) remains.
+    # Refusing to sell is legal, so only the functional part (not tied to a scenario) remains,
+    # on top of the performance floor of gated scenarios.
     s = r["scores"]
-    if any(g is None or g["passed"] for g in gates.values()) or s["total"] != s["functional"] * 0.10:
+    if any(g is None or g["passed"] for g in gates.values()) or abs(s["total"] - (s["functional"] * 0.10 + FAILED_TOTAL)) > 1e-9:
         sys.exit(f"refusing every sale must fail the satisfaction gate everywhere: {gates}, total {s['total']}")
 
     run("evaluate", "--season", str(season), "--src", str(subs / "shadow"), "--out", str(work / "shadow.json"),

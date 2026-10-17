@@ -25,7 +25,7 @@ WS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WS / "bin"))
 import scoring  # noqa: E402
 
-TIMEOUT_FACTOR, TIMEOUT_SLACK_S = 1.2, 30
+TIMEOUT_FACTOR, TIMEOUT_SLACK_S = 3.0, 30
 FUNCTIONAL_TIMEOUT_S = 300
 
 
@@ -127,12 +127,12 @@ def main():
     for sc in scoring.SCENARIOS:
         g = res["gates"].get(sc)
         if sc in failed:
-            print(f"  {sc:16} FAILED: scores 0")
+            print(f"  {sc:16} FAILED: performance {scoring.PERF_FLOOR:.0f} in every measurement")
         elif g is None:
             print(f"  {sc:16} not measured")
         else:
             q = measurements[f"{sc}/t{res['quality_threads']}"]["quality"]
-            state = "ok" if g["passed"] else f"BELOW {100 * scoring.SATISFACTION_GATE:.0f}%: the scenario scores 0"
+            state = "ok" if g["passed"] else f"BELOW {100 * scoring.SATISFACTION_GATE:.0f}%: performance {scoring.PERF_FLOOR:.0f}, the rest 0"
             mm = res["memory_mb"][sc]
             if mm["engine"] is not None and mm["strong"]:
                 print(f"  {sc:16} memory {res['memory_by_scenario'][sc]:5.1f} ({mm['engine']:.0f} MB for the engine, "

@@ -309,22 +309,23 @@
       const rowH = narrow ? 46 : 34, m = narrow ? { l: 16, r: 16, t: 24, b: 26 } : { l: Math.min(300, Math.max(150, W * 0.32)), r: 130, t: 24, b: 26 };
       const H = m.t + m.b + rowH * groups.length;
       const xmax = Math.max(110, ...groups.map((g) => g.max)) * 1.04;
-      const X = scale(0, xmax, m.l, W - m.r);
+      const xmin = Math.min(0, ...groups.map((g) => g.min)) * 1.04;  // totals can be negative
+      const X = scale(xmin, xmax, m.l, W - m.r);
       const svg = sv("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "总分：各参赛单位的平均分、最差到最好、每次运行" });
-      for (const v of niceTicks(0, xmax, Math.max(3, Math.floor((W - m.l - m.r) / 90)))) {
+      for (const v of niceTicks(xmin, xmax, Math.max(3, Math.floor((W - m.l - m.r) / 90)))) {
         svg.append(sv("line", { class: "grid", x1: X(v), x2: X(v), y1: m.t, y2: H - m.b }));
         svg.append(sv("text", { x: X(v), y: H - m.b + 16, "text-anchor": "middle" }, compact(v)));
       }
       for (const [v, label] of [[0, "0"], [DATA.ref_total, `${fmt(DATA.ref_total)} 强参考`]]) {
         svg.append(sv("line", { class: "ref", x1: X(v), x2: X(v), y1: m.t - 6, y2: H - m.b, "stroke-width": 1.5 }));
-        svg.append(sv("text", { x: X(v), y: m.t - 10, "text-anchor": v ? "middle" : "start", class: "label-ink" }, label));
+        svg.append(sv("text", { x: X(v), y: m.t - 10, "text-anchor": v || xmin < 0 ? "middle" : "start", class: "label-ink" }, label));
       }
       groups.forEach((g, i) => {
         const cy = m.t + rowH * i + (narrow ? rowH - 12 : rowH / 2), color = slotVar(g.slot);
         const name = g.label.length > 46 ? g.label.slice(0, 45) + "…" : g.label;
         if (narrow) svg.append(sv("text", { x: m.l, y: cy - 16, "text-anchor": "start", class: "label-ink", "font-size": 12 }, name));
         else svg.append(sv("text", { x: m.l - 10, y: cy + 4, "text-anchor": "end", class: "label-ink", "font-size": 12 }, name));
-        svg.append(sv("rect", { x: X(0), y: cy - 3, width: X(xmax) - X(0), height: 6, rx: 3, fill: "var(--wash)" }));
+        svg.append(sv("rect", { x: X(xmin), y: cy - 3, width: X(xmax) - X(xmin), height: 6, rx: 3, fill: "var(--wash)" }));
         if (g.n > 1) {
           svg.append(sv("line", { x1: X(g.min), x2: X(g.max), y1: cy, y2: cy, stroke: color, "stroke-width": 2 }));
           for (const x of [g.min, g.max]) svg.append(sv("line", { x1: X(x), x2: X(x), y1: cy - 6, y2: cy + 6, stroke: color, "stroke-width": 2 }));
@@ -530,7 +531,7 @@
       { label: "性能", num: true, sort: (g) => g.perf }, { label: "功能", num: true, sort: (g) => g.functional },
       { label: "周转量", num: true, sort: (g) => g.transport }, { label: "偏好", num: true, sort: (g) => g.pref },
       { label: "内存", num: true, sort: (g) => g.memory },
-      { label: "通过率", num: true, sort: (g) => g.pass_rate, title: "9 组测量中没有被清零的比例" },
+      { label: "通过率", num: true, sort: (g) => g.pass_rate, title: "9 组测量中没有失败（超时、判错、门槛）的比例" },
       { label: "平均用时", num: true, sort: (g) => g.elapsed }, { label: "结束方式" },
       { label: "平均费用", num: true, sort: (g) => g.cost }, { label: "分 / 美元", num: true, sort: (g) => g.per_usd },
       { label: "平均 token", num: true, sort: (g) => g.tokens }, { label: "工具版本" }],
@@ -541,7 +542,7 @@
           fmtMin(g.elapsed), ends(g), fmtUsd(g.cost), g.per_usd ? fmt(g.per_usd) : "–", compact(g.tokens),
           el("span", {}, g.versions.join(", ") || "–", g.versions.length > 1 ? el("span", { class: "chip fail", title: "这一组的运行用了不同版本的工具", style: "margin-left:4px" }, "多版本") : null)],
       }))),
-      note("总分 = 性能 65% + 功能 10% + 周转量 12% + 偏好 8% + 内存 5%。性能：0 = 基线，100 = 强参考。功能：功能测试集各类别通过率的平均。周转量：与强参考持平 70 分，少 7% 为 0，多 3% 为满分 100。内存：不超过强参考 100 分，4 倍及以上 0 分。通过率 = 9 组测量中没有被清零的比例（判错、崩溃、超内存，或订票满足率低于强参考的 85%）。分 / 美元 = 平均分 ÷ 平均费用。点击表头排序。"))));
+      note("总分 = 性能 65% + 功能 10% + 周转量 12% + 偏好 8% + 内存 5%。性能：0 = 基线，100 = 强参考，比基线慢为负，失败的测量 −100。功能：功能测试集各类别通过率的平均。周转量：与强参考持平 70 分，少 7% 为 0，多 3% 为满分 100。内存：不超过强参考 100 分，4 倍及以上 0 分。通过率 = 9 组测量中没有被清零的比例（判错、崩溃、超内存，或订票满足率低于强参考的 85%）。分 / 美元 = 平均分 ÷ 平均费用。点击表头排序。"))));
 
     // heatmap
     const keys = DATA.keys;
@@ -557,7 +558,7 @@
             (failed ? "✗ " : "") + fmt(g.heat[k], 0));
         })))));
     app.append(section("heat", "分项得分", card(el("div", { class: "scroll-x" }, heat),
-      note("每格是该组测量的平均性能分（0 = 基线，100 = 强参考）。✗ 表示至少一次运行在该组被清零（判错、崩溃、超内存、致命错误，或订票满足率低于强参考的 85%）。颜色越深分数越高，100 以上同色。"))));
+      note("每格是该组测量的平均性能分（0 = 基线，100 = 强参考，比基线慢为负，最低 −100）。✗ 表示至少一次运行在该组记了最低分（超时、判错、崩溃、超内存、致命错误，或订票满足率低于强参考的 85%）。颜色越深分数越高，100 以上同色。"))));
 
     const pts = groups.filter((g) => g.cost > 0).map((g) => ({ x: g.cost, y: g.mean, label: g.label, slot: g.slot, per: g.per_usd }));
     app.append(section("cost", "分数与费用", card(pts.length ? scatter(pts) : note("没有费用数据（OpenCode 自定义提供商未配置价格，或人工模式未填写费用）。"),
@@ -565,7 +566,7 @@
 
     app.append(section("time", "分数随时间", card(lineChart({
       series: groups.map((g) => ({ name: g.label, color: slotVar(g.slot), points: g.curve, step: true })),
-      x: { min: 0, max: DATA.standard_minutes, fmt: (v) => `${v}`, label: "分钟", unit: " 分钟" }, y: { min: 0, label: "平均分", fmt: (v) => compact(v) },
+      x: { min: 0, max: DATA.standard_minutes, fmt: (v) => `${v}`, label: "分钟", unit: " 分钟" }, y: { min: Math.min(0, ...groups.flatMap((g) => g.curve.map((p) => p[1]))), label: "平均分", fmt: (v) => compact(v) },
       refs: [{ y: DATA.ref_total, label: "强参考" }], height: 280, fmtTip: (s, p) => fmt(p[1]),
       table: { headers: ["分钟", ...groups.map((g) => g.label)], rows: (groups[0]?.curve || []).map((p, i) => [p[0], ...groups.map((g) => fmt(g.curve[i][1]))]) },
     }), note("每个参赛单位各次运行在同一时刻的快照得分取平均。中间快照用精简评测（只测 4 线程、不跑 TSan），最后一张是完整评测，两者不完全可比。"))));
@@ -590,7 +591,7 @@
         { label: "强参考吞吐", num: true }, { label: "强参考查询 p99", num: true }, { label: "强参考订票 p99", num: true }],
       S.anchors.map((a) => ({ data: a, cells: [keyLabel(a.key), compact(a.baseline_throughput) + "/s", fmtUs(a.baseline_query_p99_ns / 1e3), fmtUs(a.baseline_book_p99_ns / 1e3),
         fmt(a.baseline_wall_s, a.baseline_wall_s < 10 ? 1 : 0) + " s", compact(a.strong_throughput) + "/s", fmtUs(a.strong_query_p99_ns / 1e3), fmtUs(a.strong_book_p99_ns / 1e3)] }))),
-      note("吞吐 = 每秒完成的调用数。分数按与强参考之比 r 的幂曲线计：基线 0 分、强参考 100 分，r = 0.5 约 65 分，单项最多 150 分。"))));
+      note("吞吐 = 每秒完成的调用数。分数按与强参考之比 r 的幂曲线计：基线 0 分、强参考 100 分，r = 0.5 约 65 分，单项最多 150 分；比基线慢为负分，最低 −100，超时、判错的测量也记 −100。"))));
   }
 
   // ------------------------------------------------------------ run page
@@ -621,7 +622,7 @@
       tile("token", compact((u.input || 0) + (u.cache_read || 0) + (u.cache_write || 0) + (u.output || 0)),
         `输入 ${compact(u.input)} · 缓存读 ${compact(u.cache_read)} · 输出 ${compact(u.output)}`),
       tile("首次通过 make check", isNum(st.first_pass_min) ? fmtMin(st.first_pass_min) : "–", A ? `${st.checks_passed}/${st.checks} 次通过` : "无会话记录"),
-      tile("被清零的测量", F ? `${F.gated} / 9` : "–"),
+      tile("失败的测量", F ? `${F.gated} / 9` : "–"),
       tile("工具", `${R.tool_name || "–"}`, `${R.tool_version || ""} · ${R.model || ""}${R.variant ? ` (${R.variant})` : ""}`))));
 
     // score curve
@@ -633,7 +634,7 @@
       series: [{ name: "快照得分（隐藏负载）", color, points: curve.map((p) => [p.t, p.total, p]), step: true, markers: true, extendTo: Math.max(R.elapsed_min || 0, ...curve.map((p) => p.t)),
         hollow: (p) => p[2].mode !== "full" }],
       x: { min: 0, max: Math.max(R.minutes || DATA.standard_minutes, R.elapsed_min || 0), label: "分钟", unit: " 分钟", fmt: (v) => `${Math.round(v)}` },
-      y: { min: 0, label: "总分" }, refs: [{ y: DATA.ref_total, label: "强参考" }], vlines, height: 240, legend: false,
+      y: { min: Math.min(0, ...curve.map((p) => p.total)), label: "总分" }, refs: [{ y: DATA.ref_total, label: "强参考" }], vlines, height: 240, legend: false,
       fmtTip: (s, p) => `${fmt(p[1])}（${p[2].name}，${p[2].mode === "full" ? "完整评测" : "精简评测"}）`,
       table: { headers: ["快照", "分钟", "总分", "评测"], rows: curve.map((p) => [p.name, fmt(p.t), fmt(p.total), p.mode]) },
     }) : note("没有评分结果"), note("实心点 = 完整评测，空心点 = 精简评测（只测 4 线程、不跑 TSan），两者不完全可比。竖线是时间提醒、续跑和交卷 / 收卷。"));
@@ -666,7 +667,7 @@
         const reps = r.repeats || [];
         const thrRange = reps.length > 1 ? `${compact(Math.min(...reps.map((x) => x.throughput)))}–${compact(Math.max(...reps.map((x) => x.throughput)))}` : "";
         return { data: r, cells: [keyLabel(r.key), statusChip(r.status), fmt(r.score),
-          el("div", { class: "bar-track", title: `${fmt(r.score)} 分` }, el("div", { class: "bar-fill", style: `width:${Math.min(100, r.score / maxScore * 100)}%;background:${color}` }),
+          el("div", { class: "bar-track", title: `${fmt(r.score)} 分` }, el("div", { class: "bar-fill", style: `width:${Math.min(100, Math.max(0, r.score) / maxScore * 100)}%;background:${color}` }),
             el("div", { class: "bar-ref", style: `left:${100 / maxScore * 100}%` })),
           fmt(r.thr_score), fmt(r.lat_score),
           el("span", { title: thrRange ? `各次重复：${thrRange}/s` : "" }, isNum(r.throughput) ? compact(r.throughput) + "/s" : "–"),

@@ -12,7 +12,10 @@ main phase's booking quality from railjudge.
                 70% throughput + 30% p99 latency, each scored on a power
                 curve of r = value / the strong reference's:
                 100 (r^0.6 - c^0.6) / (1 - c^0.6), c = baseline / strong,
-                so 0 at the baseline, 100 at the strong reference, at most 150
+                so 0 at the baseline, 100 at the strong reference, at most
+                150; below the baseline -100 (1 - (value / baseline)^0.6),
+                down to -100; a measurement that timed out, failed or was
+                gated scores -100, so failing never beats being slow
   transport   = mean over scenarios of a score for r = passenger-minutes
                 carried / the strong reference's: 70 at r = 1, 0 at r <= 0.93,
                 100 at r >= 1.03, linear in between
@@ -25,7 +28,9 @@ main phase's booking quality from railjudge.
                 own footprint) / the strong reference's: 100 at m <= 1,
                 0 at m >= 4, 100 - 50 log2(m) in between
   gate        = a scenario whose satisfaction (purchases served) falls below
-                85% of the strong reference's scores 0 in every part
+                85% of the strong reference's scores -100 in performance and
+                0 in its other parts, like a scenario with wrong results
+  fatal       = a data race or a slow init: every measurement -100, the rest 0
 Transport, preference and the gate use the 1-thread measurement (its
 replay order is fixed), or the lowest thread count measured.
 """
@@ -40,6 +45,7 @@ THROUGHPUT_WEIGHT, LATENCY_WEIGHT = 0.7, 0.3
 # c = baseline / strong, capped; c is at most 1 / MIN_SPAN so that a strong
 # reference barely ahead of the baseline does not turn noise into points.
 CURVE_EXPONENT, CURVE_CAP, MIN_SPAN = 0.6, 150.0, 4.0
+PERF_FLOOR = -100.0  # below the baseline the score falls towards this; failures get it
 SATISFACTION_GATE = 0.85
 # Transport: (ratio to the strong reference, score) points, linear between.
 TRANSPORT_FLOOR, TRANSPORT_PAR, TRANSPORT_CEIL = (0.93, 0.0), (1.0, 70.0), (1.03, 100.0)
@@ -48,7 +54,8 @@ MIN_ENGINE_MB = 1.0  # below this the engine's own memory is measurement noise
 
 
 def curve_score(x, base, strong):
-    """0 at the baseline, 100 at the strong reference, a power curve in x / strong between, at most CURVE_CAP.
+    """0 at the baseline, 100 at the strong reference, a power curve in x / strong between, at most CURVE_CAP;
+    below the baseline a power curve in x / baseline down to PERF_FLOOR.
 
     A log scale would spread 0-100 evenly over every doubling from the
     baseline up, so with the strong reference hundreds of times faster
@@ -56,11 +63,13 @@ def curve_score(x, base, strong):
     The power curve keeps most of the range near the strong reference
     (half scores about 65) and still gives credit far below it.
     """
-    if x <= 0 or base <= 0 or strong <= 0:
+    if base <= 0 or strong <= 0:
         return 0.0
-    c = min(base / strong, 1.0 / MIN_SPAN) ** CURVE_EXPONENT
-    s = 100.0 * ((x / strong) ** CURVE_EXPONENT - c) / (1.0 - c)
-    return min(CURVE_CAP, max(0.0, s))
+    base = min(base, strong / MIN_SPAN)
+    if x < base:
+        return PERF_FLOOR * (1.0 - (max(x, 0.0) / base) ** CURVE_EXPONENT)
+    c = (base / strong) ** CURVE_EXPONENT
+    return min(CURVE_CAP, 100.0 * ((x / strong) ** CURVE_EXPONENT - c) / (1.0 - c))
 
 
 def narrow_spans(anchors):
@@ -140,7 +149,7 @@ def score(measurements, anchors, threads, failed=(), fatal=False, functional=Non
     """Scores a set of measurements against the anchors.
 
     measurements: {"<sc>/t<N>": {"status": "ok", ...metrics...}}; a missing
-    key or another status scores 0. failed: scenarios that failed outright
+    key or another status scores PERF_FLOOR. failed: scenarios that failed outright
     (crash, wrong results, memory). functional: railrun func's result.
     Returns the scores dict railway_eval.py stores in its result.
     """
@@ -163,7 +172,7 @@ def score(measurements, anchors, threads, failed=(), fatal=False, functional=Non
             key = f"{sc}/t{t}"
             m = measurements.get(key, {})
             if not usable or m.get("status") != "ok":
-                per[key] = {"score": 0.0, "throughput_score": 0.0, "latency_score": 0.0}
+                per[key] = {"score": PERF_FLOOR, "throughput_score": PERF_FLOOR, "latency_score": PERF_FLOOR}
             else:
                 s, thr, lat = measurement_score(m, anchors["baseline"][key], anchors["strong"][key])
                 per[key] = {"score": s, "throughput_score": thr, "latency_score": lat}
@@ -188,8 +197,8 @@ def score(measurements, anchors, threads, failed=(), fatal=False, functional=Non
     pref = sum(pref_parts) / len(pref_parts)
     memory = sum(mem_parts) / len(mem_parts)
     func = 0.0 if fatal else functional_score(functional)
-    total = 0.0 if fatal else (PERF_WEIGHT * perf + FUNCTIONAL_WEIGHT * func + TRANSPORT_WEIGHT * transport
-                               + PREF_WEIGHT * pref + MEMORY_WEIGHT * memory)
+    total = (PERF_WEIGHT * perf + FUNCTIONAL_WEIGHT * func + TRANSPORT_WEIGHT * transport
+             + PREF_WEIGHT * pref + MEMORY_WEIGHT * memory)
     return {"total": total, "performance": perf, "functional": func, "transport": transport, "preference": pref,
             "memory": memory, "memory_mb": mem_mb, "memory_by_scenario": dict(zip(scenarios, mem_parts)),
             "measurements": per, "gates": gates, "quality_threads": quality_threads,

@@ -45,7 +45,7 @@ MEM_HARD_LIMIT_MB = 8192      # address-space cap that only protects the machine
 INIT_LIMIT_S = 30
 MAX_REPEATS = 5
 REPEAT_CUTOFF_S = 120         # no further repeats after a run this long
-TIMEOUT_FACTOR, TIMEOUT_SLACK_S = 1.2, 30
+TIMEOUT_FACTOR, TIMEOUT_SLACK_S = 3.0, 30  # slower than the baseline still scores (negative)
 TSAN_INTENTS = 4000
 TSAN_EXIT = 66
 
@@ -471,7 +471,7 @@ def evaluate(args, src, out_path, lite):
                         return finish(result, anchors, out_path, threads)
                     runs.append(metrics_of(verdict, run))
                     score, _, _ = measurement_score(runs[-1], base, strong)
-                    if score == 0 or run.wall_s > REPEAT_CUTOFF_S:
+                    if score <= 0 or run.wall_s > REPEAT_CUTOFF_S:
                         break
                 if failure:
                     break

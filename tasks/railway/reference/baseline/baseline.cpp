@@ -6,7 +6,8 @@
 // - query() searches level by level (direct, one transfer, two transfers),
 //   keeping only the best k itineraries and abandoning partial routes that
 //   can no longer beat them. Per query it notes which trains reach the
-//   destination; there is no precomputed connection index.
+//   destination and which stations can still get there with the legs left;
+//   there is no precomputed connection index.
 #include <algorithm>
 #include <cstdint>
 #include <mutex>
@@ -94,6 +95,8 @@ class BaselineSystem final : public TicketSystem {
       for (uint32_t i = 0; i < world.trains[t].stop_count; ++i) trains_at_[stop(t, i).station].push_back({t, i});
     }
     sold_.resize(size_t(world.train_count) * kDays);
+    dest_index_.assign(world.train_count, -1);
+    hops_.assign(world.station_count, 0);
   }
 
   Status query(const QueryRequest& req, QueryResult* out) override {
@@ -104,19 +107,24 @@ class BaselineSystem final : public TicketSystem {
     if (req.earliest < 0 || req.earliest >= kDays * kMinutesPerDay) return Status::Invalid;
     if (req.k < 1 || req.k > static_cast<uint32_t>(kMaxQueryResults)) return Status::Invalid;
 
-    // Trains that stop at the destination, and the stations they pass before it.
-    std::vector<int> dest_index(world_->train_count, -1);
-    std::vector<char> feeds_dest(world_->station_count, 0);
+    // Trains that stop at the destination, the stations they pass before it
+    // (one leg away), and the stations one transfer away from those.
+    clear_marks();
     for (const StopRef& r : trains_at_[req.to]) {
-      dest_index[r.train] = int(r.index);
-      for (uint32_t i = 0; i < r.index; ++i) feeds_dest[stop(r.train, i).station] = 1;
+      mark_train(r.train, int(r.index));
+      for (uint32_t i = 0; i < r.index; ++i) mark_station(stop(r.train, i).station, 1);
     }
+    bool two_hops_known = false;
 
     out->count = 0;
     for (uint32_t legs = 1; legs <= static_cast<uint32_t>(kMaxLegs) && out->count < req.k; ++legs) {
+      if (legs == 3 && !two_hops_known) {
+        mark_two_hops();
+        two_hops_known = true;
+      }
       Best best;
       best.cap = req.k - out->count;
-      Search s{req, legs, (req.earliest / kMinutesPerDay + 1) * kMinutesPerDay, best, dest_index, feeds_dest, {}};
+      Search s{req, legs, (req.earliest / kMinutesPerDay + 1) * kMinutesPerDay, best, {}};
       for (const StopRef& r : trains_at_[req.from]) {
         for (uint32_t day = 0; day < static_cast<uint32_t>(kDays); ++day) {
           const int32_t dep = int32_t(day) * kMinutesPerDay + stop(r.train, r.index).depart;
@@ -150,7 +158,7 @@ class BaselineSystem final : public TicketSystem {
       dep[i] = int32_t(l.day) * kMinutesPerDay + stop(l.train, a[i]).depart;
       arr[i] = int32_t(l.day) * kMinutesPerDay + stop(l.train, b[i]).arrive;
     }
-    std::vector<uint32_t> stations{req.legs[0].from};
+    uint32_t stations[kMaxLegs + 1] = {req.legs[0].from};
     for (uint32_t i = 0; i < n_legs; ++i) {
       if (i + 1 < n_legs) {
         if (req.legs[i].to != req.legs[i + 1].from) return Status::Invalid;
@@ -159,18 +167,19 @@ class BaselineSystem final : public TicketSystem {
       for (uint32_t j = 0; j < i; ++j) {
         if (req.legs[i].train == req.legs[j].train && req.legs[i].day == req.legs[j].day) return Status::Invalid;
       }
-      if (std::find(stations.begin(), stations.end(), req.legs[i].to) != stations.end()) return Status::Invalid;
-      stations.push_back(req.legs[i].to);
+      if (std::find(stations, stations + i + 1, req.legs[i].to) != stations + i + 1) return Status::Invalid;
+      stations[i + 1] = req.legs[i].to;
     }
 
     const ClassLayout& c = kLayouts[static_cast<int>(req.seat_class)];
-    std::vector<int> picked[kMaxLegs];
+    int picked[kMaxLegs][kMaxPassengers];
     for (uint32_t i = 0; i < n_legs; ++i) {
       auto& seats = seats_of(req.legs[i].train, req.legs[i].day);
-      for (int k = 0; k < c.seat_count && picked[i].size() < req.passenger_count; ++k) {
-        if (is_free(seats[c.first_seat + k], a[i], b[i])) picked[i].push_back(k);
+      uint32_t found = 0;
+      for (int k = 0; k < c.seat_count && found < req.passenger_count; ++k) {
+        if (is_free(seats[c.first_seat + k], a[i], b[i])) picked[i][found++] = k;
       }
-      if (picked[i].size() < req.passenger_count) return Status::SoldOut;
+      if (found < req.passenger_count) return Status::SoldOut;
     }
 
     const uint64_t id = next_id_++;
@@ -216,8 +225,6 @@ class BaselineSystem final : public TicketSystem {
     uint32_t legs;
     int32_t window_end;
     Best& best;
-    const std::vector<int>& dest_index;
-    const std::vector<char>& feeds_dest;
     Route route;
   };
   using Ranges = std::vector<std::pair<uint32_t, uint32_t>>;
@@ -243,7 +250,7 @@ class BaselineSystem final : public TicketSystem {
       if (s.route.legs[d].train == train && s.route.legs[d].day == day) return;
     }
     const bool last = depth + 1 == s.legs;
-    if (last && s.dest_index[train] <= int(board)) return;
+    if (last && dest_index_[train] <= int(board)) return;
     const int32_t base = int32_t(day) * kMinutesPerDay;
     for (uint32_t i = board + 1; i < world_->trains[train].stop_count; ++i) {
       const int32_t arrive = base + stop(train, i).arrive;
@@ -257,7 +264,8 @@ class BaselineSystem final : public TicketSystem {
         continue;
       }
       if (at == s.req.to || at == s.req.from) continue;
-      if (depth + 2 == s.legs && !s.feeds_dest[at]) continue;
+      // Legs left after this one: the next stop must be that many hops away.
+      if (hops_[at] == 0 || hops_[at] > s.legs - depth - 1) continue;
       bool seen = false;
       for (uint32_t d = 0; d < depth; ++d) seen |= s.route.legs[d].to == at;
       if (seen) continue;
@@ -266,6 +274,35 @@ class BaselineSystem final : public TicketSystem {
           if (int32_t(nd) * kMinutesPerDay + stop(r.train, r.index).depart >= arrive + kMinTransferMinutes) {
             ride(s, depth + 1, r.train, nd, r.index);
           }
+        }
+      }
+    }
+  }
+
+  // Per-query marks, reset by undoing only what was set.
+  void mark_train(uint32_t train, int index) {
+    if (dest_index_[train] < 0) set_trains_.push_back(train);
+    dest_index_[train] = index;
+  }
+  void mark_station(uint32_t station, uint8_t hops) {
+    if (hops_[station] == 0) set_stations_.push_back(station);
+    hops_[station] = hops;
+  }
+  void clear_marks() {
+    for (uint32_t t : set_trains_) dest_index_[t] = -1;
+    for (uint32_t st : set_stations_) hops_[st] = 0;
+    set_trains_.clear();
+    set_stations_.clear();
+  }
+
+  // hops_ 2: stations from which some train reaches a station with hops_ 1.
+  void mark_two_hops() {
+    const size_t one_hop = set_stations_.size();
+    for (size_t k = 0; k < one_hop; ++k) {
+      for (const StopRef& r : trains_at_[set_stations_[k]]) {
+        for (uint32_t i = 0; i < r.index; ++i) {
+          const uint32_t st = stop(r.train, i).station;
+          if (hops_[st] == 0) mark_station(st, 2);
         }
       }
     }
@@ -287,6 +324,9 @@ class BaselineSystem final : public TicketSystem {
   std::mutex mu_;
   const WorldData* world_ = nullptr;
   std::vector<std::vector<StopRef>> trains_at_;
+  std::vector<int> dest_index_;          // per train: its stop index at the query's destination, or -1
+  std::vector<uint8_t> hops_;            // per station: legs needed to the destination (1, 2), 0 unknown
+  std::vector<uint32_t> set_trains_, set_stations_;  // entries of the above set by this query
   std::vector<std::vector<Ranges>> sold_;  // [train-day][seat]
   std::unordered_map<uint64_t, std::vector<Hold>> orders_;
   uint64_t next_id_ = 1;
