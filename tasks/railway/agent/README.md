@@ -98,7 +98,7 @@ python3 tasks/railway/agent/package_workspace.py --out ~/llmbench/workspace --se
 
 `--selftest` 会确认空实现能编译、基线能通过 `make check`、`make tsan` 和 `make score`（需要几分钟）。
 
-打包时会在本机把基线和强参考在公开负载上各跑一遍（1、4 线程），把结果写进 `data/anchors.json`，供 Agent 用 `make score` 估分。这一步约 10 分钟，大部分是基线；**请在运行 Agent 的同一台机器上打包**，否则估分会有偏差。没有强参考（私有子模块）时加 `--anchors none`，工作区里的 `make score` 会提示不可用。
+打包时会在本机把基线和强参考在公开负载上各跑一遍（1、4 线程），把结果写进 `data/anchors.json`，供 Agent 用 `make score` 估分。这一步需要几分钟，大部分是基线；**请在运行 Agent 的同一台机器上打包**，否则估分会有偏差。没有强参考（私有子模块）时加 `--anchors none`，工作区里的 `make score` 会提示不可用。
 
 ## 2. 先用参考实现空跑一遍（推荐）
 
@@ -140,7 +140,7 @@ sudo tasks/railway/agent/vm_netguard.sh disable
 
 **时间**：
 - 提示词里写明开始时间和强制收卷时间；
-- 每到快照点（30、60、90、120 分钟），以及收卷前 10 分钟和 2 分钟，运行器会把“现在几点、还剩几分钟”插进正在进行的会话；
+- 每到快照点（30、60、90 分钟），以及收卷前 10 分钟和 2 分钟（第 95、103 分钟），运行器会把“现在几点、还剩几分钟”插进正在进行的会话；第 90 分钟的那条同时提醒“推荐用时已到”，之后只做修错和小改进；
 - Agent 随时可以运行 `make time`，`make check` 和 `make bench` 的最后一行也会显示剩余时间。
 
 **交卷与收卷**：

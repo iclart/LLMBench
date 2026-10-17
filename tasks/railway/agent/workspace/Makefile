@@ -9,8 +9,8 @@
 #                   intents (single thread, checked like verify)
 #   make score      estimated score on the public workloads, with the official
 #                   formula (TASK.md 9); takes a few minutes
-#   make tsan       ThreadSanitizer build on small workloads, 4 threads: the
-#                   official evaluation scores 0 for any data race
+#   make tsan       ThreadSanitizer build on small workloads, 4 threads: any
+#                   data race scores -100 in every performance measurement
 #   make time       time left before the forced submission (check and bench
 #                   print it too, as their last line)
 #   make submit     submit now (ends the session; src/ can no longer change)

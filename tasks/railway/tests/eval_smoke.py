@@ -3,8 +3,8 @@
 
 Prepares a season, then checks that the baseline submission evaluates
 cleanly, that the do-nothing stub is rejected scenario by scenario, that an
-engine refusing every sale (Withheld) is legal but scores 0 under the
-satisfaction gate, and that a submission shadowing ticket_system.h does not
+engine refusing every sale (Withheld) is legal but gets the performance
+floor under the satisfaction gate, and that a submission shadowing ticket_system.h does not
 compile.
 """
 import argparse

@@ -519,7 +519,7 @@
       `正式运行需要：正式模式（--strict）、时限 ${DATA.standard_minutes} 分钟、用本赛季评分、任务包和提示词版本与赛季一致。其他运行列在“其他运行”里。`));
 
     app.append(section("board", "排行",
-      note(`点 = 平均分，横线 = 最差到最好，短竖线 = 每次运行（空心表示该次有场景判错、崩溃或超内存）。总分 = 性能 65% + 功能 10% + 周转量 12% + 偏好 8% + 内存 5%；和强参考完全一样的实现得 ${fmt(DATA.ref_total)} 分，不封顶。`),
+      note(`点 = 平均分，横线 = 最差到最好，短竖线 = 每次运行（空心表示该次有场景判错、崩溃或超内存，这些场景的性能记 −100）。总分 = 性能 65% + 功能 10% + 周转量 12% + 偏好 8% + 内存 5%；和强参考完全一样的实现得 ${fmt(DATA.ref_total)} 分，可以超过 100，也可以是负分（比基线慢、超时或判错）。`),
       card(groups.length ? dotWhisker(groups) : note("无数据"))));
 
     const anyCost = groups.some((g) => g.cost);
@@ -591,7 +591,7 @@
         { label: "强参考吞吐", num: true }, { label: "强参考查询 p99", num: true }, { label: "强参考订票 p99", num: true }],
       S.anchors.map((a) => ({ data: a, cells: [keyLabel(a.key), compact(a.baseline_throughput) + "/s", fmtUs(a.baseline_query_p99_ns / 1e3), fmtUs(a.baseline_book_p99_ns / 1e3),
         fmt(a.baseline_wall_s, a.baseline_wall_s < 10 ? 1 : 0) + " s", compact(a.strong_throughput) + "/s", fmtUs(a.strong_query_p99_ns / 1e3), fmtUs(a.strong_book_p99_ns / 1e3)] }))),
-      note("吞吐 = 每秒完成的调用数。分数按与强参考之比 r 的幂曲线计：基线 0 分、强参考 100 分，r = 0.5 约 65 分，单项最多 150 分；比基线慢为负分，最低 −100，超时、判错的测量也记 −100。"))));
+      note("吞吐 = 每秒完成的调用数。分数按与强参考之比 r 的幂曲线计：基线 0 分、强参考 100 分，r = 0.5 约 69 分（强参考是基线 250 倍时），单项最多 150 分；比基线慢为负分，最低 −100，超时、判错的测量也记 −100。"))));
   }
 
   // ------------------------------------------------------------ run page

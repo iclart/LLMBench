@@ -532,7 +532,7 @@ def summary(result):
         if f:
             lines.append(f"{sc}: FAILED, {f}")
         elif g and not g["passed"]:
-            lines.append(f"{sc}: scores 0, satisfaction {100 * g['satisfaction']:.1f}% is "
+            lines.append(f"{sc}: performance {scoring.PERF_FLOOR:.0f}, the rest 0: satisfaction {100 * g['satisfaction']:.1f}% is "
                          f"{100 * g['ratio']:.1f}% of the strong reference's (at least "
                          f"{100 * scoring.SATISFACTION_GATE:.0f}% needed)")
     for key, v in s["measurements"].items():

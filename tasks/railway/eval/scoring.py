@@ -11,9 +11,9 @@ main phase's booking quality from railjudge.
   performance = mean over scenarios x thread counts of
                 70% throughput + 30% p99 latency, each scored on a power
                 curve of r = value / the strong reference's:
-                100 (r^0.6 - c^0.6) / (1 - c^0.6), c = baseline / strong,
+                100 (sqrt(r) - sqrt(c)) / (1 - sqrt(c)), c = baseline / strong,
                 so 0 at the baseline, 100 at the strong reference, at most
-                150; below the baseline -100 (1 - (value / baseline)^0.6),
+                150; below the baseline -100 (1 - sqrt(value / baseline)),
                 down to -100; a measurement that timed out, failed or was
                 gated scores -100, so failing never beats being slow
   transport   = mean over scenarios of a score for r = passenger-minutes
@@ -44,7 +44,7 @@ THROUGHPUT_WEIGHT, LATENCY_WEIGHT = 0.7, 0.3
 # Performance: 100 (r^e - c^e) / (1 - c^e) with r = value / strong and
 # c = baseline / strong, capped; c is at most 1 / MIN_SPAN so that a strong
 # reference barely ahead of the baseline does not turn noise into points.
-CURVE_EXPONENT, CURVE_CAP, MIN_SPAN = 0.6, 150.0, 4.0
+CURVE_EXPONENT, CURVE_CAP, MIN_SPAN = 0.5, 150.0, 4.0
 PERF_FLOOR = -100.0  # below the baseline the score falls towards this; failures get it
 SATISFACTION_GATE = 0.85
 # Transport: (ratio to the strong reference, score) points, linear between.
@@ -61,7 +61,7 @@ def curve_score(x, base, strong):
     baseline up, so with the strong reference hundreds of times faster
     than the baseline, half its throughput would still score close to 90.
     The power curve keeps most of the range near the strong reference
-    (half scores about 65) and still gives credit far below it.
+    (half scores about 69 when the strong reference is 250x the baseline) and still gives credit far below it.
     """
     if base <= 0 or strong <= 0:
         return 0.0
