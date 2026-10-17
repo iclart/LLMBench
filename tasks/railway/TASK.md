@@ -212,6 +212,7 @@ data/                  公开世界、三个场景的负载，以及每个负载
 | `make` | 用官方参数编译 `src/`，生成 `build/railbench`（并发压测器）和 `build/railrun`（单线程驱动） |
 | `make check` | 三个公开场景依次检查：`query` 结果与标准答案逐条比对（不一致时给出第一个差异）；单线程重放并校验每个结果；4 线程压测并由裁判判定（输出吞吐、p99 等） |
 | `make bench S=spring T=16` | 指定场景和线程数跑一次压测并判定，结果写入 `build/*.json` |
+| `make tickets S=daily N=40` | 单线程重放前 N 条意图（检查同 `verify`），打印引擎出的每张票：车次、上下车站和时刻、每位乘客的座位号，以及购票失败和退票 |
 | `make time` | 查看距离强制收卷还剩多少时间（`make check` 和 `make bench` 的最后一行也会显示） |
 | `make submit` | 提前交卷（见第 11 节） |
 

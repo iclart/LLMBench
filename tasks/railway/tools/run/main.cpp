@@ -10,6 +10,11 @@
 //       independent seat model: request validation, seat validity, no
 //       overlapping sales, exact false-negative detection, refund semantics.
 //       Reports seat-preference satisfaction.
+//
+//   railrun tickets <world> <load> [--limit N]
+//       Same replay and checks as verify, printing every ticket issued (train,
+//       times, stations, seats per leg), failed purchase and refund, for the
+//       first N intents of the main phase.
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -44,7 +49,8 @@ struct Options {
   std::fprintf(stderr,
                "usage:\n"
                "  railrun query  <world> <load> <out.answers> [--random N SEED] [--limit N] [--expect FILE]\n"
-               "  railrun verify <world> <load> [--limit N]\n");
+               "  railrun verify <world> <load> [--limit N]\n"
+               "  railrun tickets <world> <load> [--limit N]\n");
   std::exit(2);
 }
 
@@ -70,7 +76,7 @@ Options parse_args(int argc, char** argv) {
   o.mode = pos[0];
   if (o.mode == "query" && pos.size() == 4) {
     o.world = pos[1], o.load = pos[2], o.out = pos[3];
-  } else if (o.mode == "verify" && pos.size() == 3) {
+  } else if ((o.mode == "verify" || o.mode == "tickets") && pos.size() == 3) {
     o.world = pos[1], o.load = pos[2];
   } else {
     usage();
@@ -196,6 +202,7 @@ class Verifier {
   }
 
   void set_phase(const char* phase) { phase_ = phase; }
+  void print_tickets(FILE* out) { tickets_ = out; }
 
  private:
   struct Hold {
@@ -240,6 +247,7 @@ class Verifier {
     switch (in.kind) {
       case IntentKind::Purchase: {
         ++st.purchases;
+        const uint64_t ok_before = st.purchases_ok;
         rail::QueryResult r{};
         const rail::Status s = timed_query(in.query, &r, st);
         check_query(in.query, s, r);
@@ -258,6 +266,10 @@ class Verifier {
             ++st.purchases_ok;
             break;
           }
+        }
+        if (tickets_ && st.purchases_ok == ok_before) {
+          std::fprintf(tickets_, "#%llu  purchase failed: %s\n", (unsigned long long)where_,
+                       r.count ? (std::to_string(r.count) + " itineraries, all sold out").c_str() : "no itinerary");
         }
         break;
       }
@@ -280,6 +292,7 @@ class Verifier {
         if (timed_refund(order.id, st) != rail::Status::Ok) fail("refund of live order " + std::to_string(order.id) + " was not Ok");
         for (const Hold& h : order.holds) occ_[h.td][h.seat] &= ~h.mask;
         refunded_.push_back(order.id);
+        if (tickets_) std::fprintf(tickets_, "#%llu  refund of order %llu\n", (unsigned long long)where_, (unsigned long long)order.id);
         break;
       }
       case IntentKind::DupRefund: {
@@ -379,7 +392,35 @@ class Verifier {
       }
     }
     live_.push_back(std::move(order));
+    if (tickets_) print_ticket(b, res, legs);
     return true;
+  }
+
+  static std::string clock_of(int32_t t) {
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "day %d %02d:%02d", t / rail::kMinutesPerDay, (t % rail::kMinutesPerDay) / 60,
+                  t % 60);
+    return buf;
+  }
+
+  void print_ticket(const rail::BookRequest& b, const rail::BookResult& res, const ResolvedLeg* legs) const {
+    static const char* kClassNames[] = {"Business", "First", "Second"};
+    const int n = static_cast<int>(b.passenger_count);
+    std::string wants;
+    for (int p = 0; p < n; ++p)
+      if (b.window[p]) wants += (wants.empty() ? " window:" : ",") + std::to_string(p + 1);
+    if (b.together && n >= 2) wants += " together";
+    std::fprintf(tickets_, "#%llu  order %llu  %s x%d%s%s\n", (unsigned long long)where_,
+                 (unsigned long long)res.order_id, kClassNames[static_cast<int>(b.seat_class)], n,
+                 wants.empty() ? "" : "  wants", wants.c_str());
+    for (uint32_t j = 0; j < b.leg_count; ++j) {
+      const auto& l = b.legs[j];
+      std::string seats;
+      for (int p = 0; p < n; ++p) seats += " " + seat_name(res.seats[j][p]);
+      std::fprintf(tickets_, "    %-8s %s %s -> %s %s  %s\n", w_.trains[l.train].name.c_str(),
+                   w_.station_names[l.from].c_str(), clock_of(legs[j].depart).c_str(), w_.station_names[l.to].c_str(),
+                   clock_of(legs[j].arrive).c_str(), seats.c_str());
+    }
   }
 
   std::vector<uint64_t>& seats_of(uint32_t train, uint32_t day) {
@@ -397,6 +438,7 @@ class Verifier {
   std::unordered_set<uint64_t> issued_;
   const char* phase_ = "";
   uint64_t where_ = 0;
+  FILE* tickets_ = nullptr;
 };
 
 void print_stats(const char* phase, const Stats& s) {
@@ -414,17 +456,21 @@ int run_verify_mode(const Options& o, const World& world, rail::TicketSystem& sy
   const Workload load = load_workload(o.load);
   Verifier v(world, sys);
   Stats main_stats, quiet_stats;
+  const bool tickets = o.mode == "tickets";
+  if (tickets) v.print_tickets(stdout);
   try {
     v.set_phase("main");
     v.run(load, load.intents, o.limit, main_stats);
-    v.set_phase("quiet");
-    v.run(load, load.quiet, o.limit, quiet_stats);
+    if (!tickets) {
+      v.set_phase("quiet");
+      v.run(load, load.quiet, o.limit, quiet_stats);
+    }
   } catch (const VerifyError& e) {
     std::printf("FAILED: %s\n", e.what());
     return 1;
   }
   print_stats("main ", main_stats);
-  print_stats("quiet", quiet_stats);
+  if (!tickets) print_stats("quiet", quiet_stats);
   std::printf("OK\n");
   return 0;
 }

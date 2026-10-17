@@ -4,6 +4,8 @@
 #   make check      all public scenarios: reference answers, single-threaded
 #                   verification, concurrent run judged by railjudge
 #   make bench S=spring T=16     one concurrent run and its verdict
+#   make tickets S=daily N=40    the tickets your engine issues for the first N
+#                   intents (single thread, checked like verify)
 #   make time       time left before the forced submission (check and bench
 #                   print it too, as their last line)
 #   make submit     submit now (ends the session; src/ can no longer change)
@@ -15,9 +17,10 @@ HDR := $(wildcard src/*.h src/*.hpp)
 SCENARIOS := daily spring refund_wave
 S ?= daily
 T ?= 4
+N ?= 40
 WORLD := data/world.world
 
-.PHONY: all check bench time submit clean FORCE
+.PHONY: all check bench tickets time submit clean FORCE
 
 # Prints the time left before the forced submission, if the runner set one.
 TIME_LEFT = if [ -f .deadline ]; then \
@@ -64,6 +67,9 @@ bench: all
 	bin/railjudge $(WORLD) data/$(S).load data/$(S).answers build/$(S)_t$(T).log --json build/$(S)_t$(T).json && \
 	cat build/$(S)_t$(T).json || status=1; \
 	$(TIME_LEFT); exit $$status
+
+tickets: all
+	./build/railrun tickets $(WORLD) data/$(S).load --limit $(N)
 
 time:
 	@$(TIME_LEFT)

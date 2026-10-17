@@ -44,6 +44,8 @@ foreach(s IN LISTS SCENARIOS)
            COMMAND railrun_baseline verify ${DATA}/pub.world ${DATA}/${s}.load --limit ${VERIFY_LIMIT})
   set_tests_properties(rail_verify_baseline_${s} PROPERTIES FIXTURES_REQUIRED rail_data)
 endforeach()
+add_test(NAME rail_tickets_baseline COMMAND railrun_baseline tickets ${DATA}/pub.world ${DATA}/spring.load --limit 300)
+set_tests_properties(rail_tickets_baseline PROPERTIES FIXTURES_REQUIRED rail_data)
 # The oracle is exhaustive and slow, so it only replays a short prefix.
 add_test(NAME rail_verify_oracle COMMAND railrun_oracle verify ${DATA}/pub.world ${DATA}/spring.load --limit ${ORACLE_VERIFY_LIMIT})
 set_tests_properties(rail_verify_oracle PROPERTIES FIXTURES_REQUIRED rail_data)

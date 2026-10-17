@@ -45,6 +45,7 @@ $G stats pub.world daily.load
 
 R=build/tasks/railway/railrun_baseline   # 或 railrun_oracle、railrun_strong
 $R verify pub.world daily.load --limit 2000          # 单线程重放并校验
+$R tickets pub.world daily.load --limit 40           # 同上，并打印出的每张票（车次、时刻、座位号）
 $R query  pub.world daily.load out.answers --random 1000 7
 
 # 并发压测 + 判定：参考答案来自任何与 oracle 一致的引擎
