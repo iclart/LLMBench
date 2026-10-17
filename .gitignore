@@ -13,3 +13,6 @@ tasks/*/configs/hidden/
 .vscode/
 .idea/
 .DS_Store
+
+# Python
+__pycache__/
