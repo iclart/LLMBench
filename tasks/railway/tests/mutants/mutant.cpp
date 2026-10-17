@@ -1,11 +1,14 @@
 // Deliberately broken engines for testing railjudge: each wraps the public
 // baseline and injects one bug, selected by RAIL_MUTANT. Every mutant must
-// be caught; see tests/CMakeLists.txt for the expected verdicts.
+// be caught; see tests/CMakeLists.txt for the expected verdicts. The
+// exception is MUTANT_WITHHOLD_LONG, a legal engine that must pass the judge
+// while its satisfaction and mileage move apart.
 #define create_ticket_system create_baseline_ticket_system
 #include "../../reference/baseline/baseline.cpp"
 #undef create_ticket_system
 
 #include <atomic>
+#include <cstdlib>
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
@@ -20,6 +23,7 @@
 #define MUTANT_BAD_SEAT 7        // seat: first-class passengers sometimes get seat 'B'
 #define MUTANT_BUSY_SOLD_OUT 8   // false negative under contention: SoldOut when another call is running
 #define MUTANT_LEAKY_REFUND 9    // refund of a multi-leg order releases only its first leg
+#define MUTANT_WITHHOLD_LONG 10  // not a bug: a sales policy that refuses long trips (Withheld)
 
 #define MUTANT_LEG_BY_LEG (RAIL_MUTANT == MUTANT_PARTIAL_BOOK || RAIL_MUTANT == MUTANT_LEAKY_REFUND)
 
@@ -63,6 +67,8 @@ class Mutant final : public TicketSystem {
     if (busy.others > 0) return Status::SoldOut;
 #elif MUTANT_LEG_BY_LEG
     if (req.leg_count >= 2 && req.leg_count <= uint32_t(kMaxLegs)) return book_leg_by_leg(req, out);
+#elif RAIL_MUTANT == MUTANT_WITHHOLD_LONG
+    if (withhold(req)) return Status::Withheld;
 #endif
     Status st = inner_->book(req, out);
 #if RAIL_MUTANT == MUTANT_STEAL_SEATS
@@ -85,6 +91,8 @@ class Mutant final : public TicketSystem {
       std::lock_guard<std::mutex> g(mu_);
       issued_.insert(out->order_id);
     }
+#elif RAIL_MUTANT == MUTANT_WITHHOLD_LONG
+    if (st == Status::Ok) count_sale(req, out->order_id);
 #endif
     return st;
   }
@@ -109,6 +117,9 @@ class Mutant final : public TicketSystem {
     }
 #endif
     const Status st = inner_->refund(order_id);
+#if RAIL_MUTANT == MUTANT_WITHHOLD_LONG
+    if (st == Status::Ok) count_refund(order_id);
+#endif
 #if RAIL_MUTANT == MUTANT_DOUBLE_REFUND
     if (st == Status::NotFound) {
       std::lock_guard<std::mutex> g(mu_);
@@ -131,7 +142,6 @@ class Mutant final : public TicketSystem {
     int others;
   };
 
-#if MUTANT_LEG_BY_LEG
   // Absolute times of a leg, or false if the leg itself is malformed.
   bool times(const LegRef& l, int32_t* dep, int32_t* arr) const {
     if (l.train >= world_->train_count || l.day >= uint32_t(kDays)) return false;
@@ -147,7 +157,8 @@ class Mutant final : public TicketSystem {
     return true;
   }
 
-  // The whole itinerary is valid (TASK.md 4.1), so only the missing rollback is wrong.
+  // Whether the itinerary is valid (TASK.md 4.1). For the leg-by-leg mutants
+  // it is, so only their missing rollback is wrong.
   bool itinerary_ok(const BookRequest& req) const {
     int32_t dep[kMaxLegs], arr[kMaxLegs];
     uint32_t stations[kMaxLegs + 1] = {req.legs[0].from};
@@ -166,6 +177,77 @@ class Mutant final : public TicketSystem {
     return true;
   }
 
+#if RAIL_MUTANT == MUTANT_WITHHOLD_LONG
+  // Refuses trips riding longer than RAIL_WITHHOLD_MINUTES (default 240) in
+  // total; with RAIL_WITHHOLD_SHORT=1, refuses the shorter ones instead.
+  // RAIL_WITHHOLD_PERCENT (default 100) refuses only that share of them;
+  // RAIL_WITHHOLD_FILL (permille, default 0) only once the seat-minutes sold
+  // on some leg's train-day class exceed that share, like an airline's
+  // protection limit.
+  static long env(const char* name, long fallback) {
+    const char* v = std::getenv(name);
+    return v ? std::atol(v) : fallback;
+  }
+  bool withhold(const BookRequest& req) {
+    static const long limit = env("RAIL_WITHHOLD_MINUTES", 240), percent = env("RAIL_WITHHOLD_PERCENT", 100),
+                      fill = env("RAIL_WITHHOLD_FILL", 0);
+    static const bool short_ones = env("RAIL_WITHHOLD_SHORT", 0) != 0;
+    if (req.leg_count < 1 || req.leg_count > uint32_t(kMaxLegs) || req.passenger_count < 1 ||
+        req.passenger_count > uint32_t(kMaxPassengers) || uint32_t(req.seat_class) > uint32_t(SeatClass::Second) ||
+        !itinerary_ok(req)) {
+      return false;  // malformed: the inner engine says Invalid
+    }
+    long ride = 0;
+    for (uint32_t i = 0; i < req.leg_count; ++i) {
+      int32_t dep = 0, arr = 0;
+      times(req.legs[i], &dep, &arr);
+      ride += arr - dep;
+    }
+    if (short_ones ? ride > limit : ride <= limit) return false;
+    if (fill > 0) {
+      static constexpr long kSeats[kSeatClassCount] = {24, 104, 450};
+      bool full = false;
+      std::lock_guard<std::mutex> g(mu_);
+      for (uint32_t i = 0; i < req.leg_count && !full; ++i) {
+        const Train& t = world_->trains[req.legs[i].train];
+        const long run = world_->stops[t.stop_begin + t.stop_count - 1].arrive - world_->stops[t.stop_begin].arrive;
+        full = sold_[key(req.legs[i], req.seat_class)] * 1000 > fill * run * kSeats[int(req.seat_class)];
+      }
+      if (!full) return false;
+    }
+    return long(calls_.fetch_add(1) % 100) < percent;
+  }
+
+  static uint64_t key(const LegRef& l, SeatClass c) {
+    return (uint64_t(l.train) * kDays + l.day) * kSeatClassCount + uint64_t(c);
+  }
+
+  // Seat-minutes sold per train-day class, for RAIL_WITHHOLD_FILL.
+  void count_sale(const BookRequest& req, uint64_t order_id) {
+    std::vector<std::pair<uint64_t, long>> parts;
+    for (uint32_t i = 0; i < req.leg_count; ++i) {
+      int32_t dep = 0, arr = 0;
+      times(req.legs[i], &dep, &arr);
+      parts.push_back({key(req.legs[i], req.seat_class), long(arr - dep) * long(req.passenger_count)});
+    }
+    std::lock_guard<std::mutex> g(mu_);
+    for (const auto& [k, m] : parts) sold_[k] += m;
+    sales_[order_id] = std::move(parts);
+  }
+
+  void count_refund(uint64_t order_id) {
+    std::lock_guard<std::mutex> g(mu_);
+    const auto it = sales_.find(order_id);
+    if (it == sales_.end()) return;
+    for (const auto& [k, m] : it->second) sold_[k] -= m;
+    sales_.erase(it);
+  }
+
+  std::unordered_map<uint64_t, long> sold_;
+  std::unordered_map<uint64_t, std::vector<std::pair<uint64_t, long>>> sales_;
+#endif
+
+#if MUTANT_LEG_BY_LEG
   Status book_leg_by_leg(const BookRequest& req, BookResult* out) {
     if (!itinerary_ok(req)) return inner_->book(req, out);  // let the inner engine reject it
     std::vector<uint64_t> parts;

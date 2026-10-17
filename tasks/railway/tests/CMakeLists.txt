@@ -129,6 +129,12 @@ add_rail_mutant(wrong_query 6)
 add_rail_mutant(bad_seat 7)
 add_rail_mutant(busy_sold_out 8)
 add_rail_mutant(leaky_refund 9)
+add_rail_mutant(withhold_long 10)
+# The withholding engine is legal; railrun_mutant_withhold_long lets
+# experiments replay it single-threaded (railrun verify prints its quality).
+add_executable(railrun_mutant_withhold_long ../tools/run/main.cpp mutants/mutant.cpp)
+target_compile_definitions(railrun_mutant_withhold_long PRIVATE RAIL_MUTANT=10)
+target_link_libraries(railrun_mutant_withhold_long PRIVATE railcommon Threads::Threads)
 
 rail_judge_case(rail_mutant_steal_seats railbench_mutant_steal_seats spring 4 fail:oversell)
 rail_judge_case(rail_mutant_fake_sold_out railbench_mutant_fake_sold_out daily 4 fail:false_negative)

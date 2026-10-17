@@ -41,7 +41,7 @@ struct LoadParams {
   int64_t same_line_permille;
   int64_t day_weight[rail::kDays];
   int64_t time_min, time_max;
-  int64_t hot_lines, hot_permille, hot_stations, hot_day, hot_time_min, hot_time_max;
+  int64_t hot_lines, hot_permille, hot_stations, hot_inner_permille, hot_day, hot_time_min, hot_time_max;
 
   explicit LoadParams(Config& c)
       : scenario(c.get("scenario", 1, 3)),
@@ -65,6 +65,7 @@ struct LoadParams {
     hot_lines = c.get("hot_lines", 0, 1000);
     hot_permille = c.get("hot_permille", 0, 1000);
     hot_stations = c.get("hot_stations", 1, rail::kMaxStopsPerTrain);
+    hot_inner_permille = c.has("hot_inner_permille") ? c.get("hot_inner_permille", 0, 1000) : 0;
     hot_day = c.get("hot_day", 0, rail::kDays - 1);
     hot_time_min = c.get("hot_time_min", 0, rail::kMinutesPerDay - 1);
     hot_time_max = c.get("hot_time_max", hot_time_min, rail::kMinutesPerDay - 1);
@@ -189,8 +190,15 @@ class LoadGenerator {
       // Between the two ends of a hot line, in a narrow window of one day.
       const auto& st = world_.lines[hot_lines_[rng_.below(hot_lines_.size())]].stations;
       const int64_t span = std::min<int64_t>(p_.hot_stations, static_cast<int64_t>(st.size()) / 2);
-      const uint32_t head = st[rng_.below(span)];
-      const uint32_t tail = st[st.size() - 1 - rng_.below(span)];
+      uint32_t head = st[rng_.below(span)];
+      uint32_t tail = st[st.size() - 1 - rng_.below(span)];
+      if (p_.hot_inner_permille && rng_.chance(p_.hot_inner_permille)) {
+        // A shorter trip between two stations along the hot line.
+        const uint64_t a = rng_.below(st.size() - 1);
+        const uint64_t b = a + 1 + rng_.below(st.size() - 1 - a);
+        head = st[a];
+        tail = st[b];
+      }
       const bool forward = rng_.chance(500);
       q.from = forward ? head : tail;
       q.to = forward ? tail : head;

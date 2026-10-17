@@ -186,7 +186,7 @@ struct VerifyError : std::runtime_error {
 
 struct Stats {
   uint64_t queries = 0, books = 0, sold_out = 0, withheld = 0, refunds = 0, invalid = 0;
-  uint64_t purchases = 0, purchases_ok = 0, bookable = 0;  // bookable: the query found an itinerary
+  uint64_t purchases = 0, purchases_ok = 0;
   Quality quality;  // purchases, satisfaction and utilization (main phase)
   uint64_t window_wanted = 0, window_got = 0, together_wanted = 0, together_got = 0;
   double busy = 0;
@@ -207,8 +207,6 @@ class Verifier {
 
   // Utilization of the turned-down (train-day, class) pairs, from the seats held now.
   void measure(const World& w, Stats& st) {
-    st.quality.purchases = st.bookable;
-    st.quality.purchases_ok = st.purchases_ok;
     st.quality.sold_out = st.sold_out;
     st.quality.withheld = st.withheld;
     st.quality.measure(w, [&](uint32_t td, int seat) { return occ_[td].empty() ? uint64_t(0) : occ_[td][seat]; });
@@ -262,7 +260,6 @@ class Verifier {
         rail::QueryResult r{};
         const rail::Status s = timed_query(in.query, &r, st);
         check_query(in.query, s, r);
-        st.bookable += r.count > 0;
         for (uint32_t i = 0; i < r.count; ++i) {
           rail::BookRequest b{};
           b.leg_count = r.items[i].leg_count;
@@ -279,6 +276,7 @@ class Verifier {
             break;
           }
         }
+        if (r.count) st.quality.add_purchase(in.passengers, r.items[0], st.purchases_ok > ok_before);
         if (tickets_ && st.purchases_ok == ok_before) {
           std::fprintf(tickets_, "#%llu  purchase failed: %s\n", (unsigned long long)where_,
                        r.count ? (std::to_string(r.count) + " itineraries, all sold out").c_str() : "no itinerary");
@@ -471,8 +469,8 @@ void print_stats(const char* phase, const Stats& s) {
               (unsigned long long)s.together_wanted);
   if (s.quality.purchases) {
     const double u = s.quality.utilization();
-    std::printf("  satisfaction %.2f%%; utilization %s over %zu turned-down train-day classes\n",
-                100 * s.quality.satisfaction(), u < 0 ? "n/a" : (std::to_string(100 * u).substr(0, 5) + "%").c_str(),
+    std::printf("  satisfaction %.2f%%; mileage %.2f%%; utilization %s over %zu turned-down train-day classes\n",
+                100 * s.quality.satisfaction(), 100 * s.quality.mileage(), u < 0 ? "n/a" : (std::to_string(100 * u).substr(0, 5) + "%").c_str(),
                 s.quality.unmet.size());
   }
 }

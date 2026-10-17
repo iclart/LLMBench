@@ -447,9 +447,9 @@ class Judge {
   void measure_quality() {
     for (size_t i = 0; i < load_.intents.size(); ++i) {
       if (load_.intents[i].kind != IntentKind::Purchase || answer_of_[0][i] < 0) continue;
-      quality.purchases += !answers_[answer_of_[0][i]].items.empty();
+      const Answer& a = answers_[answer_of_[0][i]];
+      if (!a.items.empty()) quality.add_purchase(load_.intents[i].passengers, a.items[0], purchased_.count(i) > 0);
     }
-    quality.purchases_ok = purchased_.size();
     quality.sold_out = sold_out[int(Phase::Main)];
     quality.withheld = withheld[int(Phase::Main)];
     quality.measure(w_, [&](uint32_t td, int seat) {
@@ -613,9 +613,11 @@ int run(int argc, char** argv) {
     if (qu.utilization() >= 0) std::snprintf(util, sizeof util, "%.6f", qu.utilization());
     std::snprintf(buf, sizeof buf,
                   "  \"quality\": {\"purchases\": %llu, \"purchases_ok\": %llu, \"satisfaction\": %.6f, "
+                  "\"demand_passenger_minutes\": %lld, \"served_passenger_minutes\": %lld, \"mileage\": %.6f, "
                   "\"unmet_train_classes\": %zu, \"sold_seat_minutes\": %lld, \"capacity_seat_minutes\": %lld, "
                   "\"utilization\": %s},\n",
                   (unsigned long long)qu.purchases, (unsigned long long)qu.purchases_ok, qu.satisfaction(),
+                  (long long)qu.demand_minutes, (long long)qu.served_minutes, qu.mileage(),
                   qu.unmet.size(), (long long)qu.sold_minutes, (long long)qu.capacity_minutes, util);
     j += buf;
   }

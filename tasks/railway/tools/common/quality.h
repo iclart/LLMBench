@@ -1,8 +1,12 @@
-// Booking quality (TASK.md 6): how many purchases succeed, and how much of the
-// capacity of contested train-days is sold. Shared by railjudge and railrun.
+// Booking quality (TASK.md 6): how many purchases succeed, how much of the
+// travel asked for they carry, and how much of the capacity of contested
+// train-days is sold. Shared by railjudge and railrun.
 //
 // Satisfaction = purchases that got a ticket / purchase intents whose query
 // found at least one itinerary (the others could never be served).
+// Mileage      = the same ratio weighted by passengers x riding minutes of the
+// purchase's first itinerary, whichever itinerary was booked. Refusing long
+// trips to serve more short ones raises satisfaction and lowers mileage.
 // Utilization  = seat-minutes sold / seat-minutes on sale, over the
 // (train-day, class) pairs where some book was turned down for lack of seats
 // on that train-day (SoldOut, counting only the legs that were short) or was
@@ -32,12 +36,30 @@ inline int64_t mask_minutes(const WorldTrain& t, uint64_t mask) {
 
 inline int64_t train_minutes(const WorldTrain& t) { return t.stops.back().arrive - t.stops.front().arrive; }
 
+// Riding minutes of an itinerary, from boarding to alighting on every leg.
+inline int64_t ride_minutes(const rail::Itinerary& it) {
+  int64_t m = 0;
+  for (uint32_t j = 0; j < it.leg_count && j < uint32_t(rail::kMaxLegs); ++j) m += it.legs[j].arrive - it.legs[j].depart;
+  return m;
+}
+
 struct Quality {
   uint64_t purchases = 0, purchases_ok = 0, sold_out = 0, withheld = 0;
   std::set<std::pair<uint32_t, int>> unmet;  // (train-day, class) turned someone down
+  int64_t demand_minutes = 0, served_minutes = 0;  // passenger-minutes asked for / ticketed
   int64_t sold_minutes = 0, capacity_minutes = 0;
 
+  // One purchase whose query found `first`, its first itinerary.
+  void add_purchase(uint32_t passengers, const rail::Itinerary& first, bool ok) {
+    const int64_t m = int64_t(passengers) * ride_minutes(first);
+    ++purchases;
+    purchases_ok += ok;
+    demand_minutes += m;
+    served_minutes += ok ? m : 0;
+  }
+
   double satisfaction() const { return purchases ? double(purchases_ok) / double(purchases) : 1.0; }
+  double mileage() const { return demand_minutes ? double(served_minutes) / double(demand_minutes) : 1.0; }
   // Negative when no train-day turned anyone down.
   double utilization() const { return capacity_minutes ? double(sold_minutes) / double(capacity_minutes) : -1.0; }
 
