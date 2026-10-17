@@ -17,7 +17,7 @@ S ?= daily
 T ?= 4
 WORLD := data/world.world
 
-.PHONY: all check bench time submit clean
+.PHONY: all check bench time submit clean FORCE
 
 # Prints the time left before the forced submission, if the runner set one.
 TIME_LEFT = if [ -f .deadline ]; then \
@@ -31,10 +31,18 @@ all: build/railbench build/railrun
 build:
 	@mkdir -p build
 
-build/railbench: $(SRC) $(HDR) lib/librailbench.a | build
+# Rebuild whenever the set of source files or their contents change, not
+# only when a file looks newer: timestamps miss files moved into src/ and
+# edits made within the same clock tick as the last build.
+STAMP := build/.sources
+$(STAMP): FORCE | build
+	@new="$(SRC) $(HDR) $$(cat $(SRC) $(HDR) /dev/null | cksum)"; \
+	if [ ! -f $@ ] || [ "$$(cat $@)" != "$$new" ]; then echo "$$new" > $@; fi
+
+build/railbench: $(STAMP) lib/librailbench.a
 	$(CXX) $(CXXFLAGS) -Iinclude $(SRC) lib/librailbench.a -o $@
 
-build/railrun: $(SRC) $(HDR) lib/librailrun.a | build
+build/railrun: $(STAMP) lib/librailrun.a
 	$(CXX) $(CXXFLAGS) -Iinclude $(SRC) lib/librailrun.a -o $@
 
 check: all

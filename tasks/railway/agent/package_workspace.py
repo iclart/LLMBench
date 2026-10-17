@@ -111,6 +111,7 @@ def main():
             run(["make", "-C", trial])
             (trial / "src/solution.cpp").unlink()
             shutil.copy(TASK / "reference/baseline/baseline.cpp", trial / "src")
+            shutil.rmtree(trial / "build")  # build the baseline from scratch
             p = subprocess.run(["make", "-C", trial, "check"], capture_output=True, text=True)
             if p.returncode != 0:
                 sys.exit(f"selftest: `make check` with the baseline failed\n{p.stdout[-3000:]}\n{p.stderr[-3000:]}")
