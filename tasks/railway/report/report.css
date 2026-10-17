@@ -196,3 +196,4 @@ pre.out {
 }
 select { font: inherit; font-size: 13px; color: var(--ink); background: var(--raised); border: 1px solid var(--border); border-radius: 8px; padding: 4px 8px; }
 @media print { .btn, select { display: none; } .card { break-inside: avoid; } }
+code.failmsg { white-space: normal; word-break: break-word; font-size: 12px; }

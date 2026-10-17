@@ -52,7 +52,10 @@ TSAN_EXIT = 66
 # Official contestant compile flags (TASK.md 1).
 CXX = os.environ.get("CXX", "g++")
 CXXFLAGS = ["-O2", "-std=c++20", "-pthread"]
-HARNESS_SOURCES = [TASK / "tools/bench/main.cpp"] + sorted((TASK / "tools/common").glob("*.cpp"))
+COMMON_SOURCES = sorted((TASK / "tools/common").glob("*.cpp"))
+BENCH_MAIN, RUN_MAIN = TASK / "tools/bench/main.cpp", TASK / "tools/run/main.cpp"
+FUNCTIONAL_TIMEOUT_S = 300   # one railrun func process
+SUITE_PER_CATEGORY = 20
 
 # Static scan: constructs a ticketing engine has no business using. A hit
 # does not fail the submission; it marks it for manual review (DESIGN.md 5).
@@ -200,6 +203,7 @@ def season_paths(season):
         "tsan_load": {sc: s / f"tsan_{sc}.load" for sc in SCENARIOS},
         "tsan_answers": {sc: s / f"tsan_{sc}.answers" for sc in SCENARIOS},
         "anchors": s / "anchors.json",
+        "suite": s / "functional.suite",
         "meta": s / "season.json",
     }
 
@@ -291,6 +295,11 @@ def cmd_prepare(args):
     parallel([[answer_engine, "query", sp["world"], sp[load][sc], sp[ans][sc]]
               for sc in SCENARIOS for load, ans in (("load", "answers"), ("tsan_load", "tsan_answers"))])
 
+    log("functional suite")
+    run_checked([sys.executable, TASK / "eval/make_suite.py", "--world", sp["world"],
+                 "--reference", answer_engine, "--seed", args.seed + 21, "--out", sp["suite"],
+                 "--per-category", SUITE_PER_CATEGORY])
+
     anchors = {"harness_mb": {}, "baseline": {}, "strong": {}}
     with tempfile.TemporaryDirectory(dir=sp["dir"]) as work:
         stub = tools.engine("railbench", "stub")
@@ -349,7 +358,7 @@ def scan_sources(src):
     return flags
 
 
-def compile_submission(src, out, workdir, tsan=False):
+def compile_submission(src, out, workdir, tsan=False, main=BENCH_MAIN):
     """Compiles the submission with the official flags plus the harness. Returns (ok, log)."""
     sources = sorted(p for p in Path(src).rglob("*.cpp"))
     if not sources:
@@ -359,10 +368,10 @@ def compile_submission(src, out, workdir, tsan=False):
     if shadowing:
         return False, "the submission must not contain its own ticket_system.h", 0.0
     flags = CXXFLAGS + (["-fsanitize=thread", "-g"] if tsan else [])
-    objdir = Path(workdir) / ("obj_tsan" if tsan else "obj")
+    objdir = Path(workdir) / (("obj_tsan" if tsan else "obj") + ("" if main == BENCH_MAIN else "_run"))
     objdir.mkdir(exist_ok=True)
     objs = []
-    for i, s in enumerate(HARNESS_SOURCES):
+    for i, s in enumerate([main] + COMMON_SOURCES):
         o = objdir / f"harness_{i}.o"
         run_checked([CXX] + flags + [f"-I{TASK / 'include'}", f"-I{TASK / 'tools/common'}", "-c", s, "-o", o])
         objs.append(o)
@@ -398,6 +407,14 @@ def evaluate(args, src, out_path, lite):
             result["fatal"] = "compile_error"
             result["compile_log"] = clog
             return finish(result, anchors, out_path, threads)
+
+        rrun = Path(work) / "railrun_submission"
+        ok, clog, _ = compile_submission(src, rrun, work, main=RUN_MAIN)
+        if not ok:
+            result["fatal"] = "compile_error"
+            result["compile_log"] = clog
+            return finish(result, anchors, out_path, threads)
+        result["functional"] = functional(tools, rrun, sp, args, work)
 
         if not lite:
             tbench = Path(work) / "railbench_submission_tsan"
@@ -463,10 +480,33 @@ def evaluate(args, src, out_path, lite):
     return finish(result, anchors, out_path, threads)
 
 
+def functional(tools, rrun, sp, args, work):
+    """Runs the season's functional suite, resuming after crashes (scoring.run_functional)."""
+    if not sp["suite"].exists():
+        raise SystemExit(f"season {sp['dir']} has no functional suite; prepare it again")
+    log("functional suite")
+    trace = Path(work) / "functional.trace"
+
+    def launch(start):
+        run = run_sandboxed([rrun, "func", sp["world"], sp["suite"], "--from", start, "--trace", trace],
+                            cpus=parse_cpus(args.cpus), sandbox=args.sandbox, ro_paths=[sp["dir"], rrun, tools.railexec],
+                            rw_path=work, timeout=FUNCTIONAL_TIMEOUT_S, tools=tools)
+        if run.timed_out:
+            return "timeout"
+        if run.exit in (0, 1):
+            return None
+        return f"signal {run.signal}" if run.signal else f"exit {run.exit}"
+
+    res = scoring.run_functional(sp["suite"], trace, launch)
+    log(f"functional {scoring.functional_score(res):.1f}" + (f", {res['crashes']} crash(es)" if res["crashes"] else ""))
+    return res
+
+
 def finish(result, anchors, out_path, threads):
     """Computes the scores (scoring.py) and writes the result."""
     failed = [sc for sc in SCENARIOS if result["scenarios"].get(sc, {}).get("failure") is not None]
-    result["scores"] = scoring.score(result["measurements"], anchors, threads, failed, result["fatal"] is not None)
+    result["scores"] = scoring.score(result["measurements"], anchors, threads, failed, result["fatal"] is not None,
+                                     result.get("functional"))
     result["needs_review"] = bool(result["flags"])
     Path(out_path).write_text(json.dumps(result, indent=2))
     log(summary(result))
@@ -475,8 +515,12 @@ def finish(result, anchors, out_path, threads):
 
 def summary(result):
     s = result["scores"]
-    lines = [f"total {s['total']:.1f}  (performance {s['performance']:.1f}, transport {s['transport']:.1f}, "
-             f"preference {s['preference']:.1f})  mode={result['mode']}"]
+    lines = [f"total {s['total']:.1f}  (performance {s['performance']:.1f}, functional {s['functional']:.1f}, "
+             f"transport {s['transport']:.1f}, preference {s['preference']:.1f}, memory {s['memory']:.1f})  "
+             f"mode={result['mode']}"]
+    for cat, c in (result.get("functional") or {}).get("categories", {}).items():
+        if c["passed"] < c["total"]:
+            lines.append(f"  functional {cat}: {c['passed']}/{c['total']}, e.g. {c['failures'][0].splitlines()[0]}")
     if result["fatal"]:
         lines.append(f"FATAL: {result['fatal']}")
     for sc in SCENARIOS:
@@ -495,6 +539,10 @@ def summary(result):
     for sc in SCENARIOS:
         g = s["gates"].get(sc)
         if g:
+            mm = s["memory_mb"][sc]
+            if mm["engine"] is not None and mm["strong"]:
+                lines.append(f"  {sc:16} memory {s['memory_by_scenario'][sc]:5.1f} ({mm['engine']:.0f} MB, strong "
+                             f"reference {mm['strong']:.0f} MB)")
             lines.append(f"  {sc:16} transport {s['transport_by_scenario'][sc]:5.1f} (passenger-minutes "
                          f"{100 * s['transport_ratio'][sc]:5.1f}%, satisfaction {100 * g['ratio']:5.1f}% of the "
                          f"strong reference's)")

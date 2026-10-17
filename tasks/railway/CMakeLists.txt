@@ -5,6 +5,7 @@ add_library(railcommon STATIC
   tools/common/benchlog.cpp
   tools/common/config.cpp
   tools/common/rules.cpp
+  tools/common/suite.cpp
   tools/common/workload.cpp
   tools/common/world.cpp
 )

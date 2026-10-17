@@ -15,6 +15,13 @@
 //       Same replay and checks as verify, printing every ticket issued (train,
 //       times, stations, seats per leg), failed purchase and refund, for the
 //       first N intents of the main phase.
+//
+//   railrun func <world> <suite> [--from N] [--trace FILE] [--json FILE] [--record OUT]
+//       Runs the functional test suite (suite.h) and prints the pass rate per
+//       category and the first failures. --from starts at case N, --trace
+//       appends one line per case to FILE as it goes (for drivers that
+//       restart after a crash), --record stores this engine's query answers
+//       as the expected ones.
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -31,6 +38,7 @@
 #include "rng.h"
 #include "rules.h"
 #include "seats.h"
+#include "suite.h"
 #include "ticket_system.h"
 #include "workload.h"
 #include "world.h"
@@ -41,9 +49,9 @@ using namespace railtools;
 using Clock = std::chrono::steady_clock;
 
 struct Options {
-  std::string mode, world, load, out, expect;
+  std::string mode, world, load, out, expect, json, record, trace;
   uint64_t random_count = 0, random_seed = 0;
-  uint64_t limit = UINT64_MAX;
+  uint64_t limit = UINT64_MAX, from = 0;
 };
 
 [[noreturn]] void usage() {
@@ -51,7 +59,8 @@ struct Options {
                "usage:\n"
                "  railrun query  <world> <load> <out.answers> [--random N SEED] [--limit N] [--expect FILE]\n"
                "  railrun verify <world> <load> [--limit N]\n"
-               "  railrun tickets <world> <load> [--limit N]\n");
+               "  railrun tickets <world> <load> [--limit N]\n"
+               "  railrun func   <world> <suite> [--from N] [--trace FILE] [--json FILE] [--record OUT]\n");
   std::exit(2);
 }
 
@@ -67,6 +76,14 @@ Options parse_args(int argc, char** argv) {
       o.limit = std::stoull(argv[++i]);
     } else if (a == "--expect" && i + 1 < argc) {
       o.expect = argv[++i];
+    } else if (a == "--json" && i + 1 < argc) {
+      o.json = argv[++i];
+    } else if (a == "--record" && i + 1 < argc) {
+      o.record = argv[++i];
+    } else if (a == "--from" && i + 1 < argc) {
+      o.from = std::stoull(argv[++i]);
+    } else if (a == "--trace" && i + 1 < argc) {
+      o.trace = argv[++i];
     } else if (a.rfind("--", 0) == 0) {
       usage();
     } else {
@@ -77,7 +94,7 @@ Options parse_args(int argc, char** argv) {
   o.mode = pos[0];
   if (o.mode == "query" && pos.size() == 4) {
     o.world = pos[1], o.load = pos[2], o.out = pos[3];
-  } else if ((o.mode == "verify" || o.mode == "tickets") && pos.size() == 3) {
+  } else if ((o.mode == "verify" || o.mode == "tickets" || o.mode == "func") && pos.size() == 3) {
     o.world = pos[1], o.load = pos[2];
   } else {
     usage();
@@ -508,6 +525,92 @@ int run_verify_mode(const Options& o, const World& world, rail::TicketSystem& sy
   return 0;
 }
 
+// ---------------------------------------------------------------- func mode
+
+std::string json_string(const std::string& s) {
+  std::string out = "\"";
+  for (char c : s) {
+    if (c == '"' || c == '\\') out += '\\', out += c;
+    else if (c == '\n') out += "\\n";
+    else if (static_cast<unsigned char>(c) < 0x20) out += ' ';
+    else out += c;
+  }
+  return out + "\"";
+}
+
+int run_func_mode(const Options& o, const World& world, rail::TicketSystem& sys) {
+  std::vector<SuiteCase> cases = load_suite(o.load);
+  SuiteRunner runner(world, sys);
+  struct Tally {
+    uint64_t passed = 0, total = 0;
+    std::vector<std::string> failures;
+  };
+  std::vector<std::pair<std::string, Tally>> tallies;  // in order of first appearance
+  auto tally = [&](const std::string& cat) -> Tally& {
+    for (auto& [name, t] : tallies)
+      if (name == cat) return t;
+    tallies.push_back({cat, {}});
+    return tallies.back().second;
+  };
+  for (const auto& c : cases) tally(c.category);
+  const bool record = !o.record.empty();
+  FILE* trace = o.trace.empty() ? nullptr : std::fopen(o.trace.c_str(), "a");
+  if (!o.trace.empty() && !trace) throw std::runtime_error("cannot write " + o.trace);
+  for (size_t i = o.from; i < cases.size(); ++i) {
+    const std::string err = runner.run(cases[i], record);
+    Tally& t = tally(cases[i].category);
+    ++t.total;
+    t.passed += err.empty();
+    if (!err.empty() && t.failures.size() < 3) t.failures.push_back("case " + std::to_string(i) + ", " + err);
+    if (trace) {
+      std::fprintf(trace, "%zu %s %s\n", i, err.empty() ? "ok" : "fail", err.empty() ? "" : json_string(err).c_str());
+      std::fflush(trace);
+    }
+  }
+  if (trace) std::fclose(trace);
+  if (record) {
+    std::ofstream f(o.record, std::ios::binary);
+    write_suite(f, cases);
+    if (!f) throw std::runtime_error("cannot write " + o.record);
+    std::fprintf(stderr, "recorded %zu cases into %s\n", cases.size(), o.record.c_str());
+    return 0;
+  }
+  double rate_sum = 0;
+  int rated = 0;
+  std::printf("functional suite: %zu cases\n", cases.size() - std::min<size_t>(o.from, cases.size()));
+  for (const auto& [name, t] : tallies) {
+    if (!t.total) continue;
+    rate_sum += double(t.passed) / double(t.total);
+    ++rated;
+    std::printf("  %-16s %4llu / %-4llu%s\n", name.c_str(), (unsigned long long)t.passed,
+                              (unsigned long long)t.total, t.passed == t.total ? "" : "  FAILED");
+  }
+  bool any_failure = false;
+  for (const auto& [name, t] : tallies) {
+    for (const auto& f : t.failures) {
+      if (!any_failure) std::printf("first failures:\n");
+      any_failure = true;
+      std::printf("  [%s] %s\n", name.c_str(), f.c_str());
+    }
+  }
+  std::printf("functional score: %.1f (mean pass rate of %d categories)\n", rated ? 100 * rate_sum / rated : 0.0, rated);
+  if (!o.json.empty()) {
+    std::string j = "{\"categories\": {";
+    bool first = true;
+    for (const auto& [name, t] : tallies) {
+      j += (first ? "" : ", ") + json_string(name) + ": {\"passed\": " + std::to_string(t.passed) +
+           ", \"total\": " + std::to_string(t.total) + ", \"failures\": [";
+      for (size_t k = 0; k < t.failures.size(); ++k) j += (k ? ", " : "") + json_string(t.failures[k]);
+      j += "]}";
+      first = false;
+    }
+    j += "}}\n";
+    std::ofstream f(o.json, std::ios::binary);
+    f << j;
+  }
+  return any_failure ? 1 : 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -520,7 +623,9 @@ int main(int argc, char** argv) {
     const auto t0 = Clock::now();
     sys->init(view.view());
     std::fprintf(stderr, "init %.3f s\n", seconds_since(t0));
-    return o.mode == "query" ? run_query_mode(o, world, *sys) : run_verify_mode(o, world, *sys);
+    if (o.mode == "query") return run_query_mode(o, world, *sys);
+    if (o.mode == "func") return run_func_mode(o, world, *sys);
+    return run_verify_mode(o, world, *sys);
   } catch (const std::exception& e) {
     std::fprintf(stderr, "railrun: %s\n", e.what());
     return 1;

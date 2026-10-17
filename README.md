@@ -46,6 +46,8 @@ $G stats pub.world daily.load
 R=build/tasks/railway/railrun_baseline   # 或 railrun_oracle、railrun_strong
 $R verify pub.world daily.load --limit 2000          # 单线程重放并校验，打印满足率、周转量、利用率
 $R tickets pub.world daily.load --limit 40           # 同上，并打印出的每张票（车次、时刻、座位号）
+python3 tasks/railway/eval/make_suite.py --world pub.world --reference $R --seed 9 --out pub.suite
+$R func pub.world pub.suite                          # 功能测试：按类别统计通过率
 $R query  pub.world daily.load out.answers --random 1000 7
 
 # 并发压测 + 判定：参考答案来自任何与 oracle 一致的引擎

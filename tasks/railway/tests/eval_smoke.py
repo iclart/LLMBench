@@ -82,12 +82,16 @@ def main():
         sys.exit(f"baseline submission should pass: {r['fatal']} {r['scenarios']}")
     if not all(g and g["passed"] for g in r["scores"]["gates"].values()) or r["scores"]["transport"] <= 0:
         sys.exit(f"the baseline must pass the satisfaction gate and carry passengers: {r['scores']['gates']}")
+    if r["scores"]["functional"] != 100 or r["scores"]["memory"] <= 0:
+        sys.exit(f"the baseline must pass the functional suite and score on memory: {r['functional']}, "
+                 f"memory {r['scores']['memory_mb']}")
 
     run("evaluate", "--season", str(season), "--src", str(subs / "stub"), "--out", str(work / "stub.json"), "--lite")
     r = json.loads((work / "stub.json").read_text())
     failed = [sc for sc, s in r["scenarios"].items() if s.get("failure")]
-    if len(failed) != 3 or r["scores"]["total"] != 0:
-        sys.exit(f"stub should fail every scenario: {r['scenarios']}")
+    if len(failed) != 3 or r["scores"]["total"] != 0 or r["scores"]["functional"] != 0:
+        sys.exit(f"stub should fail every scenario and every functional category: {r['scenarios']}, "
+                 f"functional {r['scores']['functional']}")
 
     run("evaluate", "--season", str(season), "--src", str(subs / "withhold"), "--out", str(work / "withhold.json"),
         "--lite")
@@ -95,9 +99,10 @@ def main():
     if r["fatal"] or any(s.get("failure") for s in r["scenarios"].values()):
         sys.exit(f"withholding is legal and must pass the judge: {r['fatal']} {r['scenarios']}")
     gates = r["scores"]["gates"]
-    if any(g is None or g["passed"] for g in gates.values()) or r["scores"]["total"] != 0:
-        sys.exit(f"refusing every sale must fail the satisfaction gate everywhere: {gates}, "
-                 f"total {r['scores']['total']}")
+    # Refusing to sell is legal, so only the functional part (not tied to a scenario) remains.
+    s = r["scores"]
+    if any(g is None or g["passed"] for g in gates.values()) or s["total"] != s["functional"] * 0.10:
+        sys.exit(f"refusing every sale must fail the satisfaction gate everywhere: {gates}, total {s['total']}")
 
     run("evaluate", "--season", str(season), "--src", str(subs / "shadow"), "--out", str(work / "shadow.json"),
         "--lite", expect_ok=False)

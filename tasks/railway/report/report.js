@@ -55,6 +55,12 @@
   function fmtUsd(x) { return isNum(x) ? "$" + (x >= 100 ? x.toFixed(0) : x.toFixed(2)) : "–"; }
   const slotVar = (slot) => (slot >= 1 && slot <= 8 ? `var(--s${slot})` : "var(--s-other)");
   const SCEN = { daily: "日常", spring: "春运", refund_wave: "退票潮" };
+  const FUNC = {
+    q_direct: "查询：直达", q_transfer1: "查询：一次换乘", q_transfer2: "查询：两次换乘", q_crossline: "查询：跨线车次",
+    q_overnight: "查询：跨日", q_none: "查询：无方案", q_invalid: "查询：非法请求", b_invalid: "订票：非法请求",
+    b_capacity: "订票：容量", b_interval: "订票：区间复用", b_multileg: "订票：多程原子性", b_seats: "订票：座位合法性",
+    b_crossline: "订票：跨线车次", refund: "退票", refund_multileg: "退票：多程订单",
+  };
   const keyLabel = (k) => { const [sc, t] = k.split("/"); return `${SCEN[sc] || sc} · ${t.slice(1)} 线程`; };
   const STATUS = {
     ok: ["✓", "正常", "var(--st-ok)"], timeout: ["⏱", "超时", "var(--st-warn)"],
@@ -512,7 +518,7 @@
       "正式运行需要：正式模式（--strict）、时限 150 分钟、用本赛季评分、任务包和提示词版本与赛季一致。其他运行列在“其他运行”里。"));
 
     app.append(section("board", "排行",
-      note(`点 = 平均分，横线 = 最差到最好，短竖线 = 每次运行（空心表示该次有场景判错、崩溃或超内存）。总分 = 性能 75% + 周转量 15% + 偏好 10%；和强参考完全一样的实现得 ${fmt(DATA.ref_total)} 分，不封顶。`),
+      note(`点 = 平均分，横线 = 最差到最好，短竖线 = 每次运行（空心表示该次有场景判错、崩溃或超内存）。总分 = 性能 65% + 功能 10% + 周转量 12% + 偏好 8% + 内存 5%；和强参考完全一样的实现得 ${fmt(DATA.ref_total)} 分，不封顶。`),
       card(groups.length ? dotWhisker(groups) : note("无数据"))));
 
     const anyCost = groups.some((g) => g.cost);
@@ -521,8 +527,9 @@
       { label: "#", num: true, sort: (g) => g.rank }, { label: "参赛单位", sort: (g) => g.label },
       { label: "n", num: true, sort: (g) => g.n }, { label: "平均", num: true, sort: (g) => g.mean },
       { label: "最差", num: true, sort: (g) => g.min }, { label: "最好", num: true, sort: (g) => g.max },
-      { label: "性能", num: true, sort: (g) => g.perf }, { label: "周转量", num: true, sort: (g) => g.transport },
-      { label: "偏好", num: true, sort: (g) => g.pref },
+      { label: "性能", num: true, sort: (g) => g.perf }, { label: "功能", num: true, sort: (g) => g.functional },
+      { label: "周转量", num: true, sort: (g) => g.transport }, { label: "偏好", num: true, sort: (g) => g.pref },
+      { label: "内存", num: true, sort: (g) => g.memory },
       { label: "通过率", num: true, sort: (g) => g.pass_rate, title: "9 组测量中没有被清零的比例" },
       { label: "平均用时", num: true, sort: (g) => g.elapsed }, { label: "结束方式" },
       { label: "平均费用", num: true, sort: (g) => g.cost }, { label: "分 / 美元", num: true, sort: (g) => g.per_usd },
@@ -530,11 +537,11 @@
       groups.map((g, i) => (g.rank = i + 1, {
         data: g, cells: [i + 1,
           el("span", {}, el("span", { class: "key", style: `background:${slotVar(g.slot)}` }), g.label, g.manual ? el("span", { class: "chip", style: "margin-left:6px" }, "人工") : null),
-          g.n, fmt(g.mean), fmt(g.min), fmt(g.max), fmt(g.perf), fmt(g.transport), fmt(g.pref), fmt(g.pass_rate * 100, 0) + "%",
+          g.n, fmt(g.mean), fmt(g.min), fmt(g.max), fmt(g.perf), fmt(g.functional), fmt(g.transport), fmt(g.pref), fmt(g.memory), fmt(g.pass_rate * 100, 0) + "%",
           fmtMin(g.elapsed), ends(g), fmtUsd(g.cost), g.per_usd ? fmt(g.per_usd) : "–", compact(g.tokens),
           el("span", {}, g.versions.join(", ") || "–", g.versions.length > 1 ? el("span", { class: "chip fail", title: "这一组的运行用了不同版本的工具", style: "margin-left:4px" }, "多版本") : null)],
       }))),
-      note("性能：0 = 基线，100 = 强参考。周转量：与强参考持平 70 分，少 7% 为 0，多 3% 为满分 100。通过率 = 9 组测量中没有被清零的比例（判错、崩溃、超内存，或订票满足率低于强参考的 85%）。分 / 美元 = 平均分 ÷ 平均费用。点击表头排序。"))));
+      note("总分 = 性能 65% + 功能 10% + 周转量 12% + 偏好 8% + 内存 5%。性能：0 = 基线，100 = 强参考。功能：功能测试集各类别通过率的平均。周转量：与强参考持平 70 分，少 7% 为 0，多 3% 为满分 100。内存：不超过强参考 100 分，4 倍及以上 0 分。通过率 = 9 组测量中没有被清零的比例（判错、崩溃、超内存，或订票满足率低于强参考的 85%）。分 / 美元 = 平均分 ÷ 平均费用。点击表头排序。"))));
 
     // heatmap
     const keys = DATA.keys;
@@ -607,7 +614,7 @@
     const u = R.usage || {};
     const st = A?.stats || {};
     app.append(section("overview", "概览", el("div", { class: "tiles" },
-      tile("总分", F ? fmt(F.total) : "–", F ? `性能 ${fmt(F.performance)} · 周转量 ${fmt(F.transport)} · 偏好 ${fmt(F.preference)}` : null, true),
+      tile("总分", F ? fmt(F.total) : "–", F ? `性能 ${fmt(F.performance)} · 功能 ${fmt(F.functional)} · 周转量 ${fmt(F.transport)} · 偏好 ${fmt(F.preference)} · 内存 ${fmt(F.memory)}` : null, true),
       tile("结束方式", END[R.end_reason] || R.end_reason || "–", `用时 ${fmtMin(R.elapsed_min)}`),
       tile("续跑次数", R.resumes ?? "–"),
       tile("费用", fmtUsd(u.cost), u.source === "manual" ? "人工填写" : null),
@@ -725,7 +732,20 @@
             fmt(r.transport), pct(q.utilization), pct(sq.utilization), isNum(q.withheld) ? q.withheld : "–"] };
         })),
         note(`周转量 = 买到票的旅客人数 × 所查询第一个方案的乘车分钟。与强参考持平得 70 分，少 ${fmt((1 - Q.floor) * 100, 0)}% 为 0 分，多 ${fmt((Q.ceil - 1) * 100, 0)}% 为满分 100。利用率只展示，不计分。`));
-      app.append(section("correct", "正确性与订票质量", corr, ...(qual ? [qual] : []), pref));
+      const FN = DATA.functional;
+      const func = FN && card(el("h3", {}, `功能测试（${Object.values(FN.categories).reduce((a, c) => a + c.total, 0)} 题${FN.crashes ? `，引擎崩溃 ${FN.crashes} 次` : ""}）`),
+        table([{ label: "类别" }, { label: "通过", num: true }, { label: "通过率", num: true }, { label: "第一个失败" }],
+          Object.entries(FN.categories).map(([k, c]) => ({ data: c, cells: [FUNC[k] || k, `${c.passed} / ${c.total}`,
+            c.passed === c.total ? el("span", {}, "✓ 100%") : el("span", { style: "color:var(--st-crit)" }, pct(c.passed / c.total)),
+            c.failures.length ? el("code", { class: "failmsg" }, c.failures[0].split("\n")[0]) : "–"] }))),
+        note("每题单线程运行，只检查一条规则；查询结果和参考实现逐字比对，订票按规则校验（拒售总是允许）。功能分 = 各类别通过率的平均。"));
+      const mem = Q && card(el("h3", {}, "内存"), table([{ label: "场景" }, { label: "引擎峰值内存", num: true, title: "该场景各次运行中最高的进程内存，减去压测器自身的占用" }, { label: "强参考", num: true }, { label: "倍数", num: true }, { label: "内存分", num: true }],
+        Q.rows.map((r) => {
+          const m = r.memory_mb || {};
+          return { data: r, cells: [SCEN[r.scenario], isNum(m.engine) ? `${fmt(m.engine, 0)} MB` : "–", isNum(m.strong) ? `${fmt(m.strong, 0)} MB` : "–",
+            isNum(m.engine) && m.strong ? `${fmt(m.engine / m.strong, 2)}×` : "–", fmt(r.memory)] };
+        })), note(`不超过强参考得 100 分，每多一倍扣 50 分，${fmt(DATA.memory_zero, 0)} 倍及以上 0 分。`));
+      app.append(section("correct", "正确性、功能与质量", corr, ...(func ? [func] : []), ...(qual ? [qual] : []), ...(mem ? [mem] : []), pref));
     }
 
     // activity

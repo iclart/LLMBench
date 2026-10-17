@@ -22,6 +22,7 @@ workloads (tests only).
 """
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -44,6 +45,7 @@ TSAN_INTENTS, TSAN_QUIET = 4000, 500  # as railway_eval.py's TSan check
 # Scripts that ship on purpose: the scoring formula is public (TASK.md 9).
 SCRIPTS = {Path("bin/railscore.py"): TASK / "agent/workspace/railscore.py",
            Path("bin/scoring.py"): TASK / "eval/scoring.py"}
+SUITE_PER_CATEGORY = 10
 
 
 def run(argv, **kw):
@@ -73,18 +75,38 @@ def check_whitelist(ws):
         sys.exit(f"refusing to package source files: {leaked}")
 
 
+def run_rss(argv):
+    """Runs argv; returns its peak resident memory in MB."""
+    p = subprocess.Popen([str(a) for a in argv], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    _, status, usage = os.wait4(p.pid, 0)
+    err = p.stderr.read().decode(errors="replace")
+    p.stderr.close()
+    if status != 0:
+        sys.exit(f"failed: {' '.join(map(str, argv))}\n{err[-3000:]}")
+    return usage.ru_maxrss / 1024
+
+
+def timed(fn, *args):
+    start = time.monotonic()
+    out = fn(*args)
+    return time.monotonic() - start, out
+
+
 def measure_anchors(ws, tools):
     """Baseline and strong reference on the public workloads, for `make score`."""
-    anchors = {"threads": SCORE_THREADS, "machine": taskinfo.machine_info(), "baseline": {}, "strong": {}}
+    anchors = {"threads": SCORE_THREADS, "machine": taskinfo.machine_info(), "baseline": {}, "strong": {},
+               "harness_mb": {}}
     world = ws / "data/world.world"
     with tempfile.TemporaryDirectory() as tmp:
+        for sc in SCENARIOS:
+            _, rss = timed(run_rss, [tools / "railbench_stub", world, ws / f"data/{sc}.load", max(SCORE_THREADS),
+                                     Path(tmp) / "stub.log"])
+            anchors["harness_mb"][sc] = round(rss, 1)
         for engine in ("baseline", "strong"):
             for sc in SCENARIOS:
                 for t in SCORE_THREADS:
                     log, out = Path(tmp) / "a.log", Path(tmp) / "a.json"
-                    start = time.monotonic()
-                    run([tools / f"railbench_{engine}", world, ws / f"data/{sc}.load", t, log])
-                    wall = time.monotonic() - start
+                    wall, rss = timed(run_rss, [tools / f"railbench_{engine}", world, ws / f"data/{sc}.load", t, log])
                     p = subprocess.run([str(tools / "railjudge"), str(world), str(ws / f"data/{sc}.load"),
                                         str(ws / f"data/{sc}.answers"), str(log), "--json", str(out)],
                                        capture_output=True, text=True)
@@ -95,7 +117,7 @@ def measure_anchors(ws, tools):
                     anchors[engine][f"{sc}/t{t}"] = {
                         "throughput": v["throughput"], "query_p99_ns": lat["query"]["p99_ns"],
                         "book_p99_ns": lat["book"]["p99_ns"], "quiet": v["quiet"], "quality": v["quality"],
-                        "wall_s": round(wall, 2)}
+                        "wall_s": round(wall, 2), "maxrss_mb": round(rss, 1)}
                     print(f"anchor {engine:8} {sc:11} t={t} {v['throughput']:>10.0f} calls/s  {wall:6.1f} s",
                           file=sys.stderr)
     (ws / "data/anchors.json").write_text(json.dumps(anchors, indent=1))
@@ -119,7 +141,7 @@ def main():
     ref = tools / f"railrun_{a.answers_engine}"
     needed = [tools / "railgen", tools / "railjudge", ref]
     if a.anchors == "measure":
-        needed += [tools / "railbench_baseline", tools / "railbench_strong"]
+        needed += [tools / "railbench_baseline", tools / "railbench_strong", tools / "railbench_stub"]
     for t in needed:
         if not t.exists():
             sys.exit(f"{t} not found; build the project first"
@@ -159,6 +181,8 @@ def main():
                                    ["--set", f"intents={TSAN_INTENTS}", "--set", f"quiet_intents={TSAN_QUIET}"])):
             run([tools / "railgen", "load", world, cfg, seed, load] + extra)
             run([ref, "query", world, load, load.with_suffix(".answers")])
+    run([sys.executable, TASK / "eval/make_suite.py", "--world", world, "--reference", ref, "--seed", a.seed + 21,
+         "--out", ws / "data/functional.suite", "--per-category", SUITE_PER_CATEGORY])
     if a.anchors == "measure":
         measure_anchors(ws, tools)
     (ws / taskinfo.VERSION_FILE).write_text(json.dumps({"task_version": taskinfo.task_version(),

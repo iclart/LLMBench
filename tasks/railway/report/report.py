@@ -42,8 +42,9 @@ SCENARIOS = ["daily", "spring", "refund_wave"]
 THREADS = [1, 4, 16]
 KEYS = [f"{sc}/t{t}" for sc in SCENARIOS for t in THREADS]
 # Total of a submission matching the strong reference exactly (transport at par).
-REF_TOTAL = (scoring.PERF_WEIGHT * 100 + scoring.TRANSPORT_WEIGHT * scoring.TRANSPORT_PAR[1]
-             + scoring.PREF_WEIGHT * 100)
+REF_TOTAL = (scoring.PERF_WEIGHT * 100 + scoring.FUNCTIONAL_WEIGHT * 100
+             + scoring.TRANSPORT_WEIGHT * scoring.TRANSPORT_PAR[1] + scoring.PREF_WEIGHT * 100
+             + scoring.MEMORY_WEIGHT * 100)
 STANDARD_MINUTES = 150
 CURVE_STEP_MIN = 5
 SOURCE_SUFFIXES = {".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".inc"}
@@ -264,7 +265,7 @@ def final_summary(r):
     statuses = {k: measurement_status(f, k) for k in KEYS}
     return {
         "total": s["total"], "performance": s["performance"], "transport": s.get("transport"),
-        "preference": s["preference"],
+        "preference": s["preference"], "functional": s.get("functional"), "memory": s.get("memory"),
         "fatal": f.get("fatal"), "needs_review": f.get("needs_review"),
         "scores": {k: (s["measurements"].get(k) or {}).get("score", 0.0) for k in KEYS},
         "statuses": statuses,
@@ -620,7 +621,9 @@ def booking_quality(f, season):
         gate = (s.get("gates") or {}).get(sc)
         rows.append({"scenario": sc, "q": q, "strong": sq, "gate": gate,
                      "transport": (s.get("transport_by_scenario") or {}).get(sc),
-                     "transport_ratio": (s.get("transport_ratio") or {}).get(sc)})
+                     "transport_ratio": (s.get("transport_ratio") or {}).get(sc),
+                     "memory": (s.get("memory_by_scenario") or {}).get(sc),
+                     "memory_mb": (s.get("memory_mb") or {}).get(sc)})
     return {"threads": qt, "rows": rows, "gate": scoring.SATISFACTION_GATE,
             "floor": scoring.TRANSPORT_FLOOR[0], "ceil": scoring.TRANSPORT_CEIL[0]}
 
@@ -685,8 +688,8 @@ def build_index(season, runs):
             "key": list(key), "label": group_label(key, NAMES), "manual": key[3], "n": len(rs),
             "mean": mean(totals), "min": min(totals), "max": max(totals),
             "perf": mean(f["performance"] for f in finals), "pref": mean(f["preference"] for f in finals),
-            "transport": mean(f["transport"] for f in finals) if all(f["transport"] is not None for f in finals)
-            else None,
+            **{k: (mean(f[k] for f in finals) if all(f[k] is not None for f in finals) else None)
+               for k in ("transport", "functional", "memory")},
             "pass_rate": mean(1 - f["gated"] / len(KEYS) for f in finals),
             "elapsed": mean(r["run"].get("elapsed_min") for r in rs),
             "ends": dict(ends), "cost": mean(costs) if costs else None,
@@ -728,6 +731,8 @@ def build_run_page(r, season, full):
         page["correctness"] = correctness(r["final"])
         page["preference"] = preference(r["final"], season)
         page["quality"] = booking_quality(r["final"], season)
+        page["functional"] = r["final"].get("functional")
+        page["memory_zero"] = scoring.MEMORY_ZERO_RATIO
         page["build"] = r["final"].get("build")
         page["eval_machine"] = r["final"].get("machine")
     t = load_transcript(r["dir"])

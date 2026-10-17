@@ -6,7 +6,8 @@ measurements as railway_eval.py records them: one dict per "<scenario>/t<N>"
 with throughput, p99 latencies, the quiet phase's preference rates and the
 main phase's booking quality from railjudge.
 
-  total       = 75% performance + 15% transport + 10% preference
+  total       = 65% performance + 10% functional + 12% transport
+                + 8% preference + 5% memory
   performance = mean over scenarios x thread counts of
                 70% throughput + 30% p99 latency, each log-interpolated:
                 0 at the baseline, 100 at the strong reference, not capped
@@ -15,19 +16,29 @@ main phase's booking quality from railjudge.
                 100 at r >= 1.03, linear in between
   preference  = mean over scenarios of 100 x window and together rates /
                 the strong reference's
+  functional  = 100 x the mean pass rate over the categories of the
+                functional suite (railrun func), whatever the scenarios did
+  memory      = mean over scenarios of a score for m = the engine's peak
+                memory (largest of the scenario's runs, minus the harness's
+                own footprint) / the strong reference's: 100 at m <= 1,
+                0 at m >= 4, 100 - 50 log2(m) in between
   gate        = a scenario whose satisfaction (purchases served) falls below
                 85% of the strong reference's scores 0 in every part
 Transport, preference and the gate use the 1-thread measurement (its
 replay order is fixed), or the lowest thread count measured.
 """
+import json
 import math
+from pathlib import Path
 
 SCENARIOS = ["daily", "spring", "refund_wave"]
-PERF_WEIGHT, TRANSPORT_WEIGHT, PREF_WEIGHT = 0.75, 0.15, 0.10
+PERF_WEIGHT, FUNCTIONAL_WEIGHT, TRANSPORT_WEIGHT, PREF_WEIGHT, MEMORY_WEIGHT = 0.65, 0.10, 0.12, 0.08, 0.05
 THROUGHPUT_WEIGHT, LATENCY_WEIGHT = 0.7, 0.3
 SATISFACTION_GATE = 0.85
 # Transport: (ratio to the strong reference, score) points, linear between.
 TRANSPORT_FLOOR, TRANSPORT_PAR, TRANSPORT_CEIL = (0.93, 0.0), (1.0, 70.0), (1.03, 100.0)
+MEMORY_ZERO_RATIO = 4.0
+MIN_ENGINE_MB = 1.0  # below this the engine's own memory is measurement noise
 
 
 def log_score(x, base, strong):
@@ -73,21 +84,42 @@ def transport_score(quality, strong_quality):
     return min(s2, s1 + (s2 - s1) * (r - r1) / (r2 - r1))
 
 
+def engine_mb(measurements, sc, threads, harness_mb):
+    """Peak memory of the engine itself in one scenario, or None if unmeasured."""
+    peaks = [m["maxrss_mb"] for t in threads
+             if (m := measurements.get(f"{sc}/t{t}", {})).get("status", "ok") == "ok" and m.get("maxrss_mb")]
+    return max(MIN_ENGINE_MB, max(peaks) - harness_mb) if peaks else None
+
+
+def memory_score(mb, strong_mb):
+    m = mb / strong_mb if strong_mb > 0 else 1.0
+    if m <= 1.0:
+        return 100.0
+    return max(0.0, 100.0 * (1.0 - math.log2(m) / math.log2(MEMORY_ZERO_RATIO)))
+
+
+def functional_score(functional):
+    """functional: {"categories": {name: {"passed": n, "total": n}}} from railrun func."""
+    cats = [c for c in (functional or {}).get("categories", {}).values() if c.get("total")]
+    return 100.0 * sum(c["passed"] / c["total"] for c in cats) / len(cats) if cats else 0.0
+
+
 def satisfaction_ratio(quality, strong_quality):
     ref = strong_quality["satisfaction"]
     return quality["satisfaction"] / ref if ref > 0 else 1.0
 
 
-def score(measurements, anchors, threads, failed=(), fatal=False, scenarios=SCENARIOS):
+def score(measurements, anchors, threads, failed=(), fatal=False, functional=None, scenarios=SCENARIOS):
     """Scores a set of measurements against the anchors.
 
     measurements: {"<sc>/t<N>": {"status": "ok", ...metrics...}}; a missing
     key or another status scores 0. failed: scenarios that failed outright
-    (crash, wrong results, memory). Returns the scores dict railway_eval.py
-    stores in its result.
+    (crash, wrong results, memory). functional: railrun func's result.
+    Returns the scores dict railway_eval.py stores in its result.
     """
     quality_threads = 1 if 1 in threads else min(threads)
     per, perf_parts, transport_parts, pref_parts, gates, ratios = {}, [], [], [], {}, {}
+    mem_parts, mem_mb = [], {}
     for sc in scenarios:
         qkey = f"{sc}/t{quality_threads}"
         qm = measurements.get(qkey, {})
@@ -111,18 +143,81 @@ def score(measurements, anchors, threads, failed=(), fatal=False, scenarios=SCEN
             perf_parts.append(per[key]["score"])
         ratios[sc] = (transport_ratio(qm["quality"], anchors["strong"][qkey]["quality"])
                       if gate is not None else None)
+        harness = anchors.get("harness_mb", {}).get(sc, 0.0)
+        mine = engine_mb(measurements, sc, threads, harness)
+        strong = engine_mb(anchors["strong"], sc, threads, harness)
+        mem_mb[sc] = {"engine": mine, "strong": strong}
         if usable:
             transport_parts.append(transport_score(qm["quality"], anchors["strong"][qkey]["quality"])
                                    if "quality" in qm else 0.0)
             pref_parts.append(preference_score(qm["quiet"], anchors["strong"][qkey]["quiet"]))
+            mem_parts.append(memory_score(mine, strong) if mine is not None and strong else 0.0)
         else:
             transport_parts.append(0.0)
             pref_parts.append(0.0)
+            mem_parts.append(0.0)
     perf = sum(perf_parts) / len(perf_parts)
     transport = sum(transport_parts) / len(transport_parts)
     pref = sum(pref_parts) / len(pref_parts)
-    total = 0.0 if fatal else PERF_WEIGHT * perf + TRANSPORT_WEIGHT * transport + PREF_WEIGHT * pref
-    return {"total": total, "performance": perf, "transport": transport, "preference": pref,
+    memory = sum(mem_parts) / len(mem_parts)
+    func = 0.0 if fatal else functional_score(functional)
+    total = 0.0 if fatal else (PERF_WEIGHT * perf + FUNCTIONAL_WEIGHT * func + TRANSPORT_WEIGHT * transport
+                               + PREF_WEIGHT * pref + MEMORY_WEIGHT * memory)
+    return {"total": total, "performance": perf, "functional": func, "transport": transport, "preference": pref,
+            "memory": memory, "memory_mb": mem_mb, "memory_by_scenario": dict(zip(scenarios, mem_parts)),
             "measurements": per, "gates": gates, "quality_threads": quality_threads,
             "transport_by_scenario": dict(zip(scenarios, transport_parts)), "transport_ratio": ratios,
             "preference_by_scenario": dict(zip(scenarios, pref_parts))}
+
+
+# ------------------------------------------------------------------ functional suite
+
+def suite_categories(path):
+    """The category of every case of a functional suite, in order."""
+    return [line.split()[1] for line in Path(path).read_text().splitlines() if line.startswith("C ")]
+
+
+def run_functional(suite, trace, launch, crashes_per_category=5):
+    """Runs a functional suite to the end despite crashes.
+
+    launch(start) runs `railrun func <world> <suite> --from start --trace
+    <trace>` once and returns None if it exited normally, else a short
+    reason ("crash (signal 11)", "timeout"). A case that crashes the engine
+    fails and the run resumes after it with a fresh engine. After a timeout,
+    or more crashes than crashes_per_category within one category, the rest
+    of that category fails and the run resumes at the next category. Returns
+    {"categories": {name: {"passed", "total", "failures"}}, "crashes": n}.
+    """
+    cats = suite_categories(suite)
+    trace = Path(trace)
+    trace.unlink(missing_ok=True)
+    outcome, start, crashes, per_cat = {}, 0, 0, {}
+    while start < len(cats):
+        reason = launch(start)
+        if trace.exists():
+            for line in trace.read_text().splitlines():
+                i, verdict, *msg = line.split(" ", 2)
+                outcome[int(i)] = (verdict == "ok", json.loads(msg[0]) if msg and msg[0] else "")
+        nxt = next((i for i in range(start, len(cats)) if i not in outcome), len(cats))
+        if nxt >= len(cats):
+            break
+        reason = reason or "stopped early"
+        cat = cats[nxt]
+        per_cat[cat] = per_cat.get(cat, 0) + 1
+        crashes += 1
+        outcome[nxt] = (False, f"case {nxt}: the engine died ({reason})")
+        start = nxt + 1
+        if reason == "timeout" or per_cat[cat] > crashes_per_category:
+            while start < len(cats) and cats[start] == cat:
+                outcome[start] = (False, f"case {start}: not run, the engine kept dying ({reason})")
+                start += 1
+    result = {}
+    for i, cat in enumerate(cats):
+        r = result.setdefault(cat, {"passed": 0, "total": 0, "failures": []})
+        ok, msg = outcome.get(i, (False, "not run"))
+        r["total"] += 1
+        r["passed"] += ok
+        if not ok and len(r["failures"]) < 3:
+            r["failures"].append(msg if msg.startswith("case") else f"case {i}, {msg}")
+    return {"categories": result, "crashes": crashes}
+

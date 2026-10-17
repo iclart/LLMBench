@@ -1,7 +1,8 @@
 # Workspace for the LLMBench railway task. See TASK.md, section 10.
 #
 #   make            build build/railbench and build/railrun from src/
-#   make check      all public scenarios: reference answers, single-threaded
+#   make check      the functional suite (data/functional.suite), then all
+#                   public scenarios: reference answers, single-threaded
 #                   verification, concurrent run judged by railjudge
 #   make bench S=spring T=16     one concurrent run and its verdict
 #   make tickets S=daily N=40    the tickets your engine issues for the first N
@@ -53,7 +54,8 @@ build/railrun: $(STAMP) lib/librailrun.a
 	$(CXX) $(CXXFLAGS) -Iinclude $(SRC) lib/librailrun.a -o $@
 
 check: all
-	@status=0; for s in $(SCENARIOS); do \
+	@status=0; echo "== functional suite"; ./build/railrun func $(WORLD) data/functional.suite || status=1; \
+	if [ $$status -eq 0 ]; then for s in $(SCENARIOS); do \
 	  echo "== $$s: query answers vs reference"; \
 	  ./build/railrun query $(WORLD) data/$$s.load build/$$s.answers --expect data/$$s.answers || { status=1; break; }; \
 	  echo "== $$s: single-threaded verification"; \
@@ -61,8 +63,8 @@ check: all
 	  echo "== $$s: $(T) threads, judged"; \
 	  ./build/railbench $(WORLD) data/$$s.load $(T) build/$$s.log && \
 	  bin/railjudge $(WORLD) data/$$s.load data/$$s.answers build/$$s.log --json build/$$s.json || { status=1; break; }; \
-	done; \
-	if [ $$status -eq 0 ]; then echo "make check: all scenarios passed"; else echo "make check: FAILED"; fi; \
+	done; fi; \
+	if [ $$status -eq 0 ]; then echo "make check: functional suite and all scenarios passed"; else echo "make check: FAILED"; fi; \
 	$(TIME_LEFT); exit $$status
 
 bench: all
@@ -75,7 +77,7 @@ bench: all
 tickets: all
 	./build/railrun tickets $(WORLD) data/$(S).load --limit $(N)
 
-score: build/railbench
+score: all
 	@status=0; python3 bin/railscore.py || status=1; $(TIME_LEFT); exit $$status
 
 build/railbench_tsan: $(STAMP) lib/librailbench_tsan.a

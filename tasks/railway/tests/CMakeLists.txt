@@ -71,6 +71,18 @@ foreach(e IN LISTS CROSSCHECK_ENGINES)
   set_tests_properties(rail_crosscheck_${e} PROPERTIES FIXTURES_REQUIRED "rail_data;rail_answers")
 endforeach()
 
+# ---- functional suite (eval/make_suite.py, railrun func): generated from the
+# baseline's answers, passed by the independent oracle, failed by the stub.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME rail_func_suite
+         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../eval/make_suite.py --world ${DATA}/pub.world
+                 --reference $<TARGET_FILE:railrun_baseline> --seed 9 --out ${DATA}/func.suite --per-category 8)
+set_tests_properties(rail_func_suite PROPERTIES FIXTURES_REQUIRED rail_world FIXTURES_SETUP rail_func)
+add_test(NAME rail_func_oracle COMMAND railrun_oracle func ${DATA}/pub.world ${DATA}/func.suite)
+set_tests_properties(rail_func_oracle PROPERTIES FIXTURES_REQUIRED rail_func)
+add_test(NAME rail_func_stub COMMAND railrun_stub func ${DATA}/pub.world ${DATA}/func.suite)
+set_tests_properties(rail_func_stub PROPERTIES FIXTURES_REQUIRED rail_func WILL_FAIL TRUE)
+
 # ---- concurrent harness + judge
 # Smaller workloads for railbench runs; reference answers from the baseline,
 # which itself is cross-checked against the oracle above.
