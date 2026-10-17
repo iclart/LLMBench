@@ -124,7 +124,8 @@ td.heat { text-align: center; font-variant-numeric: tabular-nums; border: 2px so
 
 .status { white-space: nowrap; font-size: 13px; }
 .status .dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; }
-.bar-cell { min-width: 120px; }
+.bar-cell { min-width: 120px; vertical-align: middle; }
+td.bar-cell { padding-top: 11px; }
 .bar-track { position: relative; height: 8px; background: var(--wash); border-radius: 4px; }
 .bar-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 0 4px 4px 0; background: var(--s1); }
 .bar-ref { position: absolute; top: -3px; bottom: -3px; width: 1px; background: var(--axis); }
