@@ -60,6 +60,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 import taskinfo  # noqa: E402
+import transcript  # noqa: E402  (same directory)
 
 POLL_S = 2
 IDLE_GRACE_S = 5          # idle this long (and not submitted) before resuming
@@ -104,6 +105,31 @@ def log(msg):
 
 def clock(t):
     return time.strftime("%H:%M", time.localtime(t))
+
+
+# What the agent is told, word for word the same in every runner (run_manual.py too).
+def start_message(prompt, start, end, minutes):
+    return f"{prompt}\n（系统消息）现在是 {clock(start)}，强制收卷时间是 {clock(end)}，共 {minutes:g} 分钟。"
+
+
+def notice_message(now, left_min):
+    return (f"（系统消息）现在是 {clock(now)}，距离强制收卷还有 {left_min} 分钟。"
+            + ("请确保 src/ 始终处于能编译、能通过 `make check` 的状态。" if left_min <= 10 else ""))
+
+
+def resume_message(now, left_min):
+    return (f"（系统消息）你停下来了，但还没有交卷。现在是 {clock(now)}，距离强制收卷还有 {left_min} 分钟。"
+            f"请继续：先确保 `make check` 全部通过，再优化性能。确认完成后可以运行 `make submit` 提前交卷。")
+
+
+def notice_marks(minutes, snapshot_every):
+    """Snapshot marks and time-notice marks, in minutes from the start."""
+    marks, k = [], 1
+    while round(k * snapshot_every, 6) < minutes:
+        marks.append(round(k * snapshot_every, 6))
+        k += 1
+    notices = sorted({*marks, *(minutes - m for m in FINAL_NOTICES_MIN if minutes - m > 0)})
+    return marks, notices
 
 
 def read_env_file(path):
@@ -276,6 +302,8 @@ class Run:
             if not cursor or not page.get("data"):
                 break
         (self.out / "logs/messages.json").write_text(json.dumps(messages, ensure_ascii=False, indent=1))
+        (self.out / "logs/transcript.json").write_text(
+            json.dumps(transcript.from_opencode(messages), ensure_ascii=False, indent=1))
         for m in messages:
             if m.get("type") != "assistant":
                 continue
@@ -413,11 +441,7 @@ def main():
     end_wall = start + a.minutes * 60
     deadline = t0 + a.minutes * 60
     (ws / ".deadline").write_text(f"{int(end_wall)}\n")
-    marks, k = [], 1
-    while round(k * a.snapshot_every, 6) < a.minutes:
-        marks.append(round(k * a.snapshot_every, 6))
-        k += 1
-    notices = sorted({*marks, *(a.minutes - m for m in FINAL_NOTICES_MIN if a.minutes - m > 0)})
+    marks, notices = notice_marks(a.minutes, a.snapshot_every)
 
     log(f"opencode {version}, model {a.model}, {'strict' if a.strict else 'trial'} mode, {a.minutes:g} min")
     log(f"live view: http://<this machine>:{a.port}/  user opencode  password {a.password}  (also in {out / 'web.txt'})")
@@ -428,8 +452,7 @@ def main():
     def event(kind, **kw):
         events.append({"t_min": round((time.monotonic() - t0) / 60, 3), "kind": kind, **kw})
 
-    run.say(f"{prompt}\n（系统消息）现在是 {clock(start)}，强制收卷时间是 {clock(end_wall)}，"
-            f"共 {a.minutes:g} 分钟。")
+    run.say(start_message(prompt, start, end_wall, a.minutes))
 
     resumes, stalls, end_reason = 0, 0, None
     idle_since, last_resume = None, time.monotonic()
@@ -455,8 +478,7 @@ def main():
         try:
             if notices and elapsed_min >= notices[0]:
                 notices.pop(0)
-                run.say(f"（系统消息）现在是 {clock(time.time())}，距离强制收卷还有 {left} 分钟。"
-                        + ("请确保 src/ 始终处于能编译、能通过 `make check` 的状态。" if left <= 10 else ""), steer=True)
+                run.say(notice_message(time.time(), left), steer=True)
                 event("notice", left_min=left)
                 log(f"time notice: {left} min left")
             run.reject_questions()
@@ -475,8 +497,7 @@ def main():
                 break
             resumes += 1
             idle_since, last_resume = None, now
-            run.say(f"（系统消息）你停下来了，但还没有交卷。现在是 {clock(time.time())}，距离强制收卷还有 {left} 分钟。"
-                    f"请继续：先确保 `make check` 全部通过，再优化性能。确认完成后可以运行 `make submit` 提前交卷。")
+            run.say(resume_message(time.time(), left))
             event("resume", n=resumes)
             log(f"agent idle without submitting: resumed ({resumes})")
         except (OSError, ValueError, urllib.error.URLError) as e:

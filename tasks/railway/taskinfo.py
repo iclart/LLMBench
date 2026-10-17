@@ -62,3 +62,31 @@ def machine_info():
     except (OSError, subprocess.SubprocessError):
         info["compiler"] = None
     return info
+
+
+# Canonical names of agent harnesses: run.json stores the key, the report
+# shows the value. run_manual.py warns about names not listed here, so one
+# harness does not end up under several spellings.
+TOOLS = {
+    "opencode": "OpenCode",
+    "claude-code": "Claude Code",
+    "codex": "Codex CLI",
+    "gemini-cli": "Gemini CLI",
+    "qwen-code": "Qwen Code",
+    "kimi-cli": "Kimi CLI",
+    "cursor": "Cursor",
+    "windsurf": "Windsurf",
+    "trae": "Trae",
+    "copilot": "GitHub Copilot",
+    "cline": "Cline",
+    "roo-code": "Roo Code",
+    "kilo-code": "Kilo Code",
+    "aider": "Aider",
+    "amp": "Amp",
+    "goose": "Goose",
+    "crush": "Crush",
+}
+
+
+def tool_name(key):
+    return TOOLS.get(key, key)
