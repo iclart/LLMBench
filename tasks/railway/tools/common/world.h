@@ -3,14 +3,18 @@
 //
 // File format (ASCII, one record per line, single spaces):
 //
-//   RAILWORLD 1
+//   RAILWORLD 2
 //   STATIONS <n>
 //   <name>                                    n lines, station id = line index
 //   LINES <m>
 //   <name> <k> <s_0> ... <s_k-1>              m lines
 //   TRAINS <t>
-//   <name> <line> <k> <st arr dep> * k        t lines
+//   <name> <c> <line> * c <k> <st arr dep> * k     t lines
 //   END
+//
+// c is 1, or 2 for a cross-line train: it runs along the first line to a
+// station both lines share (where it stops), then along the second line.
+// Version 1 files (read only) have no c: "<name> <line> <k> ...".
 #pragma once
 
 #include <cstdint>
@@ -27,9 +31,12 @@ struct WorldLine {
   std::vector<uint32_t> stations;
 };
 
+inline constexpr uint32_t kNoLine = UINT32_MAX;
+
 struct WorldTrain {
   std::string name;
-  uint32_t line = 0;
+  uint32_t line = 0;         // the line it starts on
+  uint32_t line2 = kNoLine;  // cross-line trains: the line it continues on
   std::vector<rail::Stop> stops;
 };
 

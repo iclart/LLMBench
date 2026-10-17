@@ -10,7 +10,7 @@
 namespace railtools {
 
 void write_world(std::ostream& out, const World& world) {
-  out << "RAILWORLD 1\n";
+  out << "RAILWORLD 2\n";
   out << "STATIONS " << world.station_names.size() << '\n';
   for (const auto& name : world.station_names) out << name << '\n';
   out << "LINES " << world.lines.size() << '\n';
@@ -21,7 +21,9 @@ void write_world(std::ostream& out, const World& world) {
   }
   out << "TRAINS " << world.trains.size() << '\n';
   for (const auto& train : world.trains) {
-    out << train.name << ' ' << train.line << ' ' << train.stops.size();
+    out << train.name << ' ' << (train.line2 == kNoLine ? 1 : 2) << ' ' << train.line;
+    if (train.line2 != kNoLine) out << ' ' << train.line2;
+    out << ' ' << train.stops.size();
     for (const auto& stop : train.stops) out << ' ' << stop.station << ' ' << stop.arrive << ' ' << stop.depart;
     out << '\n';
   }
@@ -32,7 +34,8 @@ World read_world(std::istream& in) {
   TokenReader r(in, "world");
   World world;
   r.expect("RAILWORLD");
-  if (r.u32() != 1) r.fail("unsupported world format version");
+  const uint32_t version = r.u32();
+  if (version != 1 && version != 2) r.fail("unsupported world format version");
 
   r.expect("STATIONS");
   world.station_names.resize(r.u32());
@@ -50,7 +53,10 @@ World read_world(std::istream& in) {
   world.trains.resize(r.u32());
   for (auto& train : world.trains) {
     train.name = r.word();
+    const uint32_t lines = version == 1 ? 1 : r.u32();
+    if (lines != 1 && lines != 2) r.fail("train " + train.name + " must run on 1 or 2 lines");
     train.line = r.u32();
+    if (lines == 2) train.line2 = r.u32();
     const uint32_t k = r.u32();
     if (k > rail::kMaxStopsPerTrain) r.fail("train " + train.name + " has too many stops");
     train.stops.resize(k);
@@ -106,17 +112,34 @@ void validate_world(const World& world) {
     if (!on_some_line[s]) fail("station " + world.station_names[s] + " is on no line");
   }
 
+  // Stops [from, to] of a train lie on line li in strictly monotone order.
+  auto runs_along = [&](const WorldTrain& train, uint32_t li, size_t from, size_t to) {
+    const auto& pos = position[li];
+    int direction = 0;
+    for (size_t i = from; i <= to; ++i) {
+      if (pos[train.stops[i].station] < 0) return false;
+      if (i == from) continue;
+      const int step = pos[train.stops[i].station] - pos[train.stops[i - 1].station];
+      const int dir = step > 0 ? 1 : -1;
+      if (step == 0 || (direction != 0 && dir != direction)) return false;
+      direction = dir;
+    }
+    return true;
+  };
+
   for (const auto& train : world.trains) {
     const std::string who = "train " + train.name;
     if (train.line >= world.lines.size()) fail(who + " references unknown line");
+    const bool cross = train.line2 != kNoLine;
+    if (cross && (train.line2 >= world.lines.size() || train.line2 == train.line)) fail(who + " has a bad second line");
     const auto& stops = train.stops;
     if (stops.size() < 2 || stops.size() > rail::kMaxStopsPerTrain) fail(who + " has a bad stop count");
-    const auto& pos = position[train.line];
-    int direction = 0;
+    std::vector<bool> visited(n, false);
     for (size_t i = 0; i < stops.size(); ++i) {
       const auto& stop = stops[i];
       if (stop.station >= n) fail(who + " references unknown station");
-      if (pos[stop.station] < 0) fail(who + " stops at a station off its line");
+      if (visited[stop.station]) fail(who + " visits a station twice");
+      visited[stop.station] = true;
       const bool terminal = i == 0 || i + 1 == stops.size();
       if (terminal ? stop.arrive != stop.depart : stop.arrive >= stop.depart) {
         fail(who + " has bad arrive/depart at stop " + std::to_string(i));
@@ -125,14 +148,19 @@ void validate_world(const World& world) {
         if (stop.depart < 0 || stop.depart >= rail::kMinutesPerDay) fail(who + " departs outside its first day");
         continue;
       }
-      const auto& prev = stops[i - 1];
-      if (stop.arrive <= prev.depart) fail(who + " has non-increasing times at stop " + std::to_string(i));
-      const int step = pos[stop.station] - pos[prev.station];
-      if (step == 0) fail(who + " visits a station twice");
-      const int dir = step > 0 ? 1 : -1;
-      if (direction != 0 && dir != direction) fail(who + " changes direction along its line");
-      direction = dir;
+      if (stop.arrive <= stops[i - 1].depart) fail(who + " has non-increasing times at stop " + std::to_string(i));
     }
+    const size_t last = stops.size() - 1;
+    if (!cross) {
+      if (!runs_along(train, train.line, 0, last)) fail(who + " leaves its line or changes direction along it");
+      continue;
+    }
+    // Some junction stop j: the first line up to j, the second from j on.
+    bool ok = false;
+    for (size_t j = 1; j < last && !ok; ++j) {
+      ok = runs_along(train, train.line, 0, j) && runs_along(train, train.line2, j, last);
+    }
+    if (!ok) fail(who + " does not run along its first line to a shared station and then along its second");
   }
 }
 

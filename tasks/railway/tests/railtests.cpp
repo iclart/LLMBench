@@ -1,5 +1,6 @@
 // Self-checks for the railway tools. Run via ctest, or directly:
 //   railtests [--print-golden]
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -96,6 +97,15 @@ void test_world_is_deterministic_and_round_trips() {
 
   CHECK(a.trains.size() == 1000);
   for (const auto& t : a.trains) CHECK(t.stops.size() <= size_t(rail::kMaxStopsPerTrain));
+  const auto cross = std::count_if(a.trains.begin(), a.trains.end(), [](const WorldTrain& t) { return t.line2 != kNoLine; });
+  CHECK(cross > 50 && cross < 200);  // cross_line_permille = 120
+
+  // Version 1 files (one line per train, no line count) still load.
+  std::string v1 = "RAILWORLD 1\nSTATIONS 3\nA\nB\nC\nLINES 1\nL1 3 0 1 2\nTRAINS 1\nD1 0 2 0 600 600 2 700 700\nEND\n";
+  std::istringstream in1(v1);
+  const World old = read_world(in1);
+  validate_world(old);
+  CHECK(old.trains[0].line == 0 && old.trains[0].line2 == kNoLine);
 }
 
 void test_world_view_matches_world() {
@@ -134,6 +144,18 @@ void test_validator_catches_broken_worlds() {
   World dup = w;
   dup.trains[0].stops[1].station = dup.trains[0].stops[0].station;
   CHECK(expect_invalid(dup));
+  // A cross-line train must switch lines at a shared station: claiming a
+  // different second line, or none, breaks it.
+  const auto cross = std::find_if(w.trains.begin(), w.trains.end(), [](const WorldTrain& t) { return t.line2 != kNoLine; });
+  CHECK(cross != w.trains.end());
+  const size_t ci = static_cast<size_t>(cross - w.trains.begin());
+  World single = w;
+  single.trains[ci].line2 = kNoLine;
+  CHECK(expect_invalid(single));
+  World wrong = w;
+  wrong.trains[ci].line2 = (wrong.trains[ci].line2 + 1) % uint32_t(w.lines.size());
+  if (wrong.trains[ci].line2 == wrong.trains[ci].line) wrong.trains[ci].line2 = (wrong.trains[ci].line2 + 1) % uint32_t(w.lines.size());
+  CHECK(expect_invalid(wrong));
   World slow = w;
   slow.trains[0].stops[1].arrive = slow.trains[0].stops[0].depart;
   CHECK(expect_invalid(slow));
@@ -219,8 +241,8 @@ void test_stub_links_against_interface() {
 // were produced on Linux; CI checks them on Windows too.
 // Regenerate with `railtests --print-golden` only when a format or generator
 // change is intended.
-const uint64_t kGoldenWorld = 0xe2849ac65f046600ull;
-const uint64_t kGoldenLoads[] = {0xad4f6e884b7daf8dull, 0xd44e0d7970eef469ull, 0x845f8a79a4ddb587ull};
+const uint64_t kGoldenWorld = 0x421fd668499557ccull;
+const uint64_t kGoldenLoads[] = {0xbda5cc579bf9ec5cull, 0x3fe15e44eeea7d24ull, 0x612ee89b04ea37d5ull};
 
 void test_golden_output(bool print) {
   const World w = make_world(kGoldenSeed);

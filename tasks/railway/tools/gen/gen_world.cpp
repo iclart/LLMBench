@@ -20,6 +20,7 @@ struct WorldParams {
   int64_t trains_per_day, min_trains_per_line;
   int64_t express_permille, express_keep_transfer_permille, express_keep_other_permille;
   int64_t partial_permille;
+  int64_t cross_line_permille;
   int64_t segment_min, segment_max;
   int64_t dwell_min, dwell_max;
   int64_t first_depart_min, first_depart_max;
@@ -41,6 +42,7 @@ struct WorldParams {
     express_keep_transfer_permille = c.get("express_keep_transfer_permille", 0, 1000);
     express_keep_other_permille = c.get("express_keep_other_permille", 0, 1000);
     partial_permille = c.get("partial_permille", 0, 1000);
+    cross_line_permille = c.get("cross_line_permille", 0, 1000);
     segment_min = c.get("segment_min", 1, 1000);
     segment_max = c.get("segment_max", segment_min, 1000);
     dwell_min = c.get("dwell_min", 1, 100);
@@ -143,45 +145,107 @@ World generate_world(Config& cfg, uint64_t seed) {
     }
   }
 
+  // Lines through each station, with the station's index on each.
+  std::vector<std::vector<std::pair<int64_t, int64_t>>> station_lines(station_count);
+  for (int64_t li = 0; li < p.lines; ++li)
+    for (size_t i = 0; i < line_stations[li].size(); ++i) station_lines[line_stations[li][i]].push_back({li, int64_t(i)});
+
+  // A route before stop selection: stations in travel order, minutes from the
+  // previous one, and whether the train must stop there.
+  struct Node {
+    uint32_t station;
+    int64_t minutes;
+    bool keep;
+  };
+  // Stations of line li from index `from` to `to` (inclusive, either
+  // direction), skipping the first when `skip_first`.
+  auto walk = [&](int64_t li, int64_t from, int64_t to, bool skip_first, std::vector<Node>& out) {
+    const int64_t dir = to >= from ? 1 : -1;
+    for (int64_t i = from; i != to + dir; i += dir) {
+      if (i == from && skip_first) continue;
+      const int64_t minutes = i == from ? 0 : segment_minutes[li][std::min(i - dir, i)];
+      out.push_back({line_stations[li][i], minutes, false});
+    }
+  };
+
   World world;
   int64_t express_no = 0, local_no = 0;
   for (int64_t li = 0; li < p.lines; ++li) {
     const auto& seq = line_stations[li];
-    const auto& seg = segment_minutes[li];
     const int64_t n = static_cast<int64_t>(seq.size());
+    std::vector<int64_t> junctions;  // indices of stations shared with other lines
+    for (int64_t i = 0; i < n; ++i)
+      if (station_lines[seq[i]].size() > 1) junctions.push_back(i);
     for (int64_t ti = 0; ti < trains_on_line[li]; ++ti) {
-      const bool reverse = train_rng.chance(500);
-      int64_t a = 0, b = n - 1;
-      if (train_rng.chance(p.partial_permille)) {
-        const int64_t span = train_rng.range(std::max<int64_t>(2, (n + 2) / 3), n);
-        a = train_rng.range(0, n - span);
-        b = a + span - 1;
-      }
-      const bool express = train_rng.chance(p.express_permille);
-      std::vector<int64_t> idx;
-      for (int64_t i = a; i <= b; ++i) {
-        bool keep = i == a || i == b || !express;
-        if (!keep) {
-          keep = train_rng.chance(lines_through[seq[i]] > 1 ? p.express_keep_transfer_permille
-                                                            : p.express_keep_other_permille);
+      std::vector<Node> route;
+      uint32_t line2 = kNoLine, junction = kNoLine;
+      if (!junctions.empty() && train_rng.chance(p.cross_line_permille)) {
+        // Cross-line: along this line to a shared station, then along another.
+        const int64_t pj = junctions[train_rng.below(junctions.size())];
+        const auto& others = station_lines[seq[pj]];
+        std::pair<int64_t, int64_t> next;
+        do next = others[train_rng.below(others.size())]; while (next.first == li);
+        const auto [lj, qj] = next;
+        const int64_t m = static_cast<int64_t>(line_stations[lj].size());
+        const bool from_low = pj == n - 1 || (pj > 0 && train_rng.chance(500));
+        const int64_t a = from_low ? train_rng.range(0, pj - 1) : train_rng.range(pj + 1, n - 1);
+        const bool to_low = qj == m - 1 || (qj > 0 && train_rng.chance(500));
+        const int64_t b = to_low ? train_rng.range(0, qj - 1) : train_rng.range(qj + 1, m - 1);
+        walk(li, a, pj, false, route);
+        route.back().keep = true;  // the junction
+        std::vector<Node> rest;
+        walk(lj, qj, b, true, rest);
+        // Stop before the first station the first part already visited.
+        for (const Node& node : rest) {
+          if (std::any_of(route.begin(), route.end(), [&](const Node& r) { return r.station == node.station; })) break;
+          route.push_back(node);
         }
-        if (keep) idx.push_back(i);
+        if (route.back().station != seq[pj]) line2 = static_cast<uint32_t>(lj), junction = seq[pj];
+      } else {
+        const bool reverse = train_rng.chance(500);
+        int64_t a = 0, b = n - 1;
+        if (train_rng.chance(p.partial_permille)) {
+          const int64_t span = train_rng.range(std::max<int64_t>(2, (n + 2) / 3), n);
+          a = train_rng.range(0, n - span);
+          b = a + span - 1;
+        }
+        walk(li, reverse ? b : a, reverse ? a : b, false, route);
       }
-      if (reverse) std::reverse(idx.begin(), idx.end());
+      route.front().keep = route.back().keep = true;
+
+      const bool express = train_rng.chance(p.express_permille);
+      std::vector<Node> kept;
+      int64_t pending = 0;
+      for (size_t i = 0; i < route.size(); ++i) {
+        pending += route[i].minutes;
+        bool keep = route[i].keep || !express;
+        if (!keep) {
+          keep = train_rng.chance(lines_through[route[i].station] > 1 ? p.express_keep_transfer_permille
+                                                                      : p.express_keep_other_permille);
+        }
+        if (keep) {
+          kept.push_back({route[i].station, pending, true});
+          pending = 0;
+        }
+      }
+      if (kept.size() > static_cast<size_t>(rail::kMaxStopsPerTrain)) kept.resize(rail::kMaxStopsPerTrain);
+      // Cut back to (or before) its junction, a cross-line train is an ordinary one.
+      if (line2 != kNoLine) {
+        const auto at = std::find_if(kept.begin(), kept.end(), [&](const Node& k) { return k.station == junction; });
+        if (at == kept.end() || at + 1 == kept.end()) line2 = kNoLine;
+      }
 
       WorldTrain train;
       train.name = express ? "G" + std::to_string(++express_no) : "D" + std::to_string(++local_no);
       train.line = static_cast<uint32_t>(li);
+      train.line2 = line2;
       int32_t t = static_cast<int32_t>(train_rng.range(p.first_depart_min, p.first_depart_max));
-      train.stops.push_back({seq[idx[0]], t, t});
-      for (size_t j = 1; j < idx.size(); ++j) {
-        const int64_t lo = std::min(idx[j - 1], idx[j]), hi = std::max(idx[j - 1], idx[j]);
-        int64_t travel = 0;
-        for (int64_t k = lo; k < hi; ++k) travel += seg[k];
-        const int32_t arrive = static_cast<int32_t>(train.stops.back().depart + travel);
-        const bool last = j + 1 == idx.size();
+      train.stops.push_back({kept[0].station, t, t});
+      for (size_t j = 1; j < kept.size(); ++j) {
+        const int32_t arrive = static_cast<int32_t>(train.stops.back().depart + kept[j].minutes);
+        const bool last = j + 1 == kept.size();
         const int32_t depart = last ? arrive : static_cast<int32_t>(arrive + train_rng.range(p.dwell_min, p.dwell_max));
-        train.stops.push_back({seq[idx[j]], arrive, depart});
+        train.stops.push_back({kept[j].station, arrive, depart});
       }
       world.trains.push_back(std::move(train));
     }
@@ -203,7 +267,10 @@ World generate_world(Config& cfg, uint64_t seed) {
     for (uint32_t s : line_stations[li]) line.stations.push_back(station_perm[s]);
   }
   for (size_t li = 0; li < world.lines.size(); ++li) world.lines[li].name = "L" + std::to_string(li + 1);
-  for (auto& train : world.trains) train.line = line_perm[train.line];
+  for (auto& train : world.trains) {
+    train.line = line_perm[train.line];
+    if (train.line2 != kNoLine) train.line2 = line_perm[train.line2];
+  }
   perm_rng.shuffle(world.trains);
 
   std::set<std::string> used_names;

@@ -41,18 +41,19 @@ void print_world_stats(const World& w) {
     }
   }
 
-  size_t total_stops = 0, max_stops = 0, express = 0;
+  size_t total_stops = 0, max_stops = 0, express = 0, cross = 0;
   int32_t max_time = 0;
   for (const auto& t : w.trains) {
     total_stops += t.stops.size();
     max_stops = std::max(max_stops, t.stops.size());
     max_time = std::max(max_time, t.stops.back().arrive);
     express += t.name[0] == 'G';
+    cross += t.line2 != kNoLine;
   }
   std::printf("stations           %zu\n", w.station_names.size());
   std::printf("transfer stations  %td\n", transfer_stations);
   std::printf("lines              %zu (isolated %zu)\n", w.lines.size(), isolated);
-  std::printf("trains per day     %zu (express %zu)\n", w.trains.size(), express);
+  std::printf("trains per day     %zu (express %zu, cross-line %zu)\n", w.trains.size(), express, cross);
   std::printf("stops per train    avg %.1f, max %zu\n", double(total_stops) / double(w.trains.size()), max_stops);
   std::printf("latest arrival     %d min after first-day midnight\n", max_time);
   std::printf("seats on sale      %zu\n", w.trains.size() * size_t(rail::kDays) * rail::kSeatsPerTrainDay);

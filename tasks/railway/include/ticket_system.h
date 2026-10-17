@@ -43,7 +43,8 @@ struct Stop {
 };
 
 struct Train {
-  uint32_t line;         // the line this train runs on (informational)
+  uint32_t line;         // the line the train starts on (informational: a cross-line
+                         // train continues onto another line at a shared station)
   uint32_t stop_begin;   // index of the first stop in WorldData::stops
   uint32_t stop_count;   // 2..kMaxStopsPerTrain; a train visits a station at most once
   const char* name;      // e.g. "G123"; display only
