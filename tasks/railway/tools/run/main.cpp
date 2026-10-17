@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "answers.h"
+#include "quality.h"
 #include "rng.h"
 #include "rules.h"
 #include "seats.h"
@@ -184,8 +185,9 @@ struct VerifyError : std::runtime_error {
 };
 
 struct Stats {
-  uint64_t queries = 0, books = 0, sold_out = 0, refunds = 0, invalid = 0;
+  uint64_t queries = 0, books = 0, sold_out = 0, withheld = 0, refunds = 0, invalid = 0;
   uint64_t purchases = 0, purchases_ok = 0;
+  Quality quality;  // purchases, satisfaction and utilization (main phase)
   uint64_t window_wanted = 0, window_got = 0, together_wanted = 0, together_got = 0;
   double busy = 0;
 };
@@ -202,6 +204,15 @@ class Verifier {
   }
 
   void set_phase(const char* phase) { phase_ = phase; }
+
+  // Utilization of the turned-down (train-day, class) pairs, from the seats held now.
+  void measure(const World& w, Stats& st) {
+    st.quality.purchases = st.purchases;
+    st.quality.purchases_ok = st.purchases_ok;
+    st.quality.sold_out = st.sold_out;
+    st.quality.withheld = st.withheld;
+    st.quality.measure(w, [&](uint32_t td, int seat) { return occ_[td].empty() ? uint64_t(0) : occ_[td][seat]; });
+  }
   void print_tickets(FILE* out) { tickets_ = out; }
 
  private:
@@ -361,9 +372,16 @@ class Verifier {
         int free = 0;
         for (int k = ci.first_seat; k < ci.first_seat + ci.seats(); ++k) free += (seats[k] & mask) == 0;
         all_enough &= free >= n;
+        if (free < n) st.quality.unmet.insert({b.legs[j].train * rail::kDays + b.legs[j].day, int(cls)});
       }
       if (all_enough) fail("false negative: SoldOut although every leg had enough free seats");
       ++st.sold_out;
+      return false;
+    }
+    if (s == rail::Status::Withheld) {  // allowed: the engine's sales policy
+      for (uint32_t j = 0; j < b.leg_count; ++j)
+        st.quality.unmet.insert({b.legs[j].train * rail::kDays + b.legs[j].day, int(cls)});
+      ++st.withheld;
       return false;
     }
     if (s != rail::Status::Ok) fail("book returned status " + std::to_string(int(s)));
@@ -443,13 +461,19 @@ class Verifier {
 
 void print_stats(const char* phase, const Stats& s) {
   auto pct = [](uint64_t a, uint64_t b) { return b ? 100.0 * double(a) / double(b) : 0.0; };
-  std::printf("%s: %llu queries, %llu books (%llu sold out, %llu invalid), %llu refunds, %.3f s in engine\n", phase,
-              (unsigned long long)s.queries, (unsigned long long)s.books, (unsigned long long)s.sold_out,
-              (unsigned long long)s.invalid, (unsigned long long)s.refunds, s.busy);
+  std::printf("%s: %llu queries, %llu books (%llu sold out, %llu withheld, %llu invalid), %llu refunds, %.3f s in engine\n",
+              phase, (unsigned long long)s.queries, (unsigned long long)s.books, (unsigned long long)s.sold_out,
+              (unsigned long long)s.withheld, (unsigned long long)s.invalid, (unsigned long long)s.refunds, s.busy);
   std::printf("  purchases %llu, succeeded %.1f%%; window %.1f%% of %llu; together %.1f%% of %llu\n",
               (unsigned long long)s.purchases, pct(s.purchases_ok, s.purchases), pct(s.window_got, s.window_wanted),
               (unsigned long long)s.window_wanted, pct(s.together_got, s.together_wanted),
               (unsigned long long)s.together_wanted);
+  if (s.quality.purchases) {
+    const double u = s.quality.utilization();
+    std::printf("  satisfaction %.2f%%; utilization %s over %zu turned-down train-day classes\n",
+                100 * s.quality.satisfaction(), u < 0 ? "n/a" : (std::to_string(100 * u).substr(0, 5) + "%").c_str(),
+                s.quality.unmet.size());
+  }
 }
 
 int run_verify_mode(const Options& o, const World& world, rail::TicketSystem& sys) {
@@ -461,6 +485,7 @@ int run_verify_mode(const Options& o, const World& world, rail::TicketSystem& sy
   try {
     v.set_phase("main");
     v.run(load, load.intents, o.limit, main_stats);
+    v.measure(world, main_stats);
     if (!tickets) {
       v.set_phase("quiet");
       v.run(load, load.quiet, o.limit, quiet_stats);

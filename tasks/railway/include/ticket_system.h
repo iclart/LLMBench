@@ -77,6 +77,8 @@ enum class Status : uint8_t {
   SoldOut = 1,   // book: some leg lacks enough free seats of the class
   Invalid = 2,   // malformed request; nothing changed
   NotFound = 3,  // refund: unknown or already refunded order
+  Withheld = 4,  // book: seats exist but the engine chooses not to sell them
+                 // (e.g. keeping seats for longer journeys); nothing changed
 };
 
 // Absolute time = day * kMinutesPerDay + minutes of the train's timetable.
@@ -149,7 +151,8 @@ class TicketSystem {
   // Returns Ok (possibly with zero results) or Invalid.
   virtual Status query(const QueryRequest& req, QueryResult* out) = 0;
 
-  // Returns Ok, SoldOut or Invalid. `out` is only meaningful on Ok.
+  // Returns Ok, SoldOut, Withheld or Invalid. `out` is only meaningful on Ok.
+  // SoldOut must be true: some leg lacks enough free seats of the class.
   virtual Status book(const BookRequest& req, BookResult* out) = 0;
 
   // Returns Ok or NotFound.
