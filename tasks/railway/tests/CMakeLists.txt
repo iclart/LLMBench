@@ -19,6 +19,19 @@ set(DATA ${CMAKE_CURRENT_BINARY_DIR}/data)
 file(MAKE_DIRECTORY ${DATA})
 set(SCENARIOS daily spring refund_wave)
 
+# Sanitizer builds run everything 5-15x slower: they get smaller workloads.
+if(RAIL_TSAN OR CMAKE_CXX_FLAGS MATCHES "-fsanitize")
+  set(RAIL_SLOW_BUILD ON)
+  set(VERIFY_LIMIT 1500)
+  set(ORACLE_VERIFY_LIMIT 100)
+  set(CROSSCHECK_QUERIES 200)
+else()
+  set(RAIL_SLOW_BUILD OFF)
+  set(VERIFY_LIMIT 5000)
+  set(ORACLE_VERIFY_LIMIT 300)
+  set(CROSSCHECK_QUERIES 800)
+endif()
+
 add_test(NAME rail_gen_world COMMAND railgen world ${CFG}/world.cfg 1 ${DATA}/pub.world)
 set_tests_properties(rail_gen_world PROPERTIES FIXTURES_SETUP rail_world)
 foreach(s IN LISTS SCENARIOS)
@@ -28,16 +41,16 @@ endforeach()
 
 foreach(s IN LISTS SCENARIOS)
   add_test(NAME rail_verify_baseline_${s}
-           COMMAND railrun_baseline verify ${DATA}/pub.world ${DATA}/${s}.load --limit 5000)
+           COMMAND railrun_baseline verify ${DATA}/pub.world ${DATA}/${s}.load --limit ${VERIFY_LIMIT})
   set_tests_properties(rail_verify_baseline_${s} PROPERTIES FIXTURES_REQUIRED rail_data)
 endforeach()
 # The oracle is exhaustive and slow, so it only replays a short prefix.
-add_test(NAME rail_verify_oracle COMMAND railrun_oracle verify ${DATA}/pub.world ${DATA}/spring.load --limit 300)
+add_test(NAME rail_verify_oracle COMMAND railrun_oracle verify ${DATA}/pub.world ${DATA}/spring.load --limit ${ORACLE_VERIFY_LIMIT})
 set_tests_properties(rail_verify_oracle PROPERTIES FIXTURES_REQUIRED rail_data)
 
 # query() answers of every engine must match the oracle's byte for byte.
 add_test(NAME rail_answers_oracle
-         COMMAND railrun_oracle query ${DATA}/pub.world ${DATA}/daily.load ${DATA}/oracle.answers --random 800 7)
+         COMMAND railrun_oracle query ${DATA}/pub.world ${DATA}/daily.load ${DATA}/oracle.answers --random ${CROSSCHECK_QUERIES} 7)
 set_tests_properties(rail_answers_oracle PROPERTIES FIXTURES_REQUIRED rail_data FIXTURES_SETUP rail_answers)
 set(CROSSCHECK_ENGINES baseline)
 
@@ -52,7 +65,7 @@ endif()
 foreach(e IN LISTS CROSSCHECK_ENGINES)
   add_test(NAME rail_crosscheck_${e}
            COMMAND railrun_${e} query ${DATA}/pub.world ${DATA}/daily.load ${DATA}/${e}.answers
-                   --random 800 7 --expect ${DATA}/oracle.answers)
+                   --random ${CROSSCHECK_QUERIES} 7 --expect ${DATA}/oracle.answers)
   set_tests_properties(rail_crosscheck_${e} PROPERTIES FIXTURES_REQUIRED "rail_data;rail_answers")
 endforeach()
 
@@ -61,8 +74,8 @@ endforeach()
 # which itself is cross-checked against the oracle above.
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 set(JUDGE_CASE ${CMAKE_CURRENT_SOURCE_DIR}/judge_case.py)
-if(RAIL_TSAN)
-  set(SMALL_INTENTS 4000)  # everything runs 5-15x slower under TSan
+if(RAIL_SLOW_BUILD)
+  set(SMALL_INTENTS 4000)
 else()
   set(SMALL_INTENTS 20000)
 endif()
@@ -142,4 +155,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     list(APPEND REPORT_SMOKE_ARGS --strong)
   endif()
   add_test(NAME rail_report_smoke COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/report_smoke.py ${REPORT_SMOKE_ARGS})
+  # The packaged workspace: whitelist, stub builds, baseline passes `make check`.
+  if(RAIL_HAVE_STRONG)
+    set(PACKAGE_ANSWERS strong)
+  else()
+    set(PACKAGE_ANSWERS baseline)
+  endif()
+  add_test(NAME rail_package_selftest COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tasks/railway/agent/package_workspace.py
+           --build ${PROJECT_BINARY_DIR} --out ${DATA}/package_selftest/workspace --answers-engine ${PACKAGE_ANSWERS} --selftest)
 endif()
