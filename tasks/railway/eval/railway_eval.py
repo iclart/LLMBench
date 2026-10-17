@@ -13,6 +13,7 @@ it. Common options: --build DIR (CMake build tree with the tools),
 --sandbox bwrap|none, --cpus LIST.
 """
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -29,6 +30,8 @@ from pathlib import Path
 
 TASK = Path(__file__).resolve().parents[1]
 REPO = TASK.parents[1]
+sys.path.insert(0, str(TASK))
+import taskinfo  # noqa: E402
 
 SCENARIOS = ["daily", "spring", "refund_wave"]
 THREADS = [1, 4, 16]
@@ -221,7 +224,10 @@ def bench_once(tools, bench, sp, scenario, threads, args, *, timeout, workdir, l
     return run, verdict
 
 
-def metrics_of(verdict, wall_s):
+SCALARS = ("throughput", "query_p99_ns", "book_p99_ns", "main_s", "init_s", "wall_s", "maxrss_mb")
+
+
+def metrics_of(verdict, run):
     lat = verdict["latency"]
     return {
         "throughput": verdict["throughput"],
@@ -229,18 +235,29 @@ def metrics_of(verdict, wall_s):
         "book_p99_ns": lat["book"]["p99_ns"],
         "main_s": verdict["main_s"],
         "init_s": verdict["init_s"],
-        "wall_s": wall_s,
+        "wall_s": run.wall_s,
+        "maxrss_mb": run.maxrss_mb,
         "quiet": verdict["quiet"],
+        # For the report: latency percentiles, histograms and the throughput timeline.
+        "dist": {"latency": lat, "histogram": verdict.get("histogram"), "timeline": verdict.get("timeline")},
     }
 
 
 def median_metrics(runs):
     out = {}
-    for key in ("throughput", "query_p99_ns", "book_p99_ns", "main_s", "init_s", "wall_s"):
+    for key in SCALARS:
         out[key] = statistics.median(r[key] for r in runs)
     out["quiet"] = runs[0]["quiet"]  # the 1-thread run is deterministic
     out["runs"] = len(runs)
+    out["repeats"] = [{key: r[key] for key in SCALARS} for r in runs]
+    # Distributions of the repeat whose throughput is the (lower) median.
+    order = sorted(range(len(runs)), key=lambda i: runs[i]["throughput"])
+    out["dist"] = runs[order[(len(runs) - 1) // 2]]["dist"]
     return out
+
+
+def season_fingerprint(sp):
+    return hashlib.sha256(sp["anchors"].read_bytes()).hexdigest()[:16]
 
 
 def cmd_prepare(args):
@@ -281,7 +298,7 @@ def cmd_prepare(args):
                         if run.exit != 0 or not verdict or not verdict["ok"]:
                             raise SystemExit(f"anchor {engine} {sc} t={t} failed: exit {run.exit}, "
                                              f"{verdict and verdict['errors'][:3]}\n{run.stderr[-2000:]}")
-                        runs.append(metrics_of(verdict, run.wall_s))
+                        runs.append(metrics_of(verdict, run))
                     m = median_metrics(runs)
                     anchors[engine][f"{sc}/t{t}"] = m
                     log(f"anchor {engine:8} {sc:11} t={t:<2} {m['throughput']:>10.0f} calls/s  "
@@ -289,6 +306,9 @@ def cmd_prepare(args):
                         f"wall {m['wall_s']:.1f} s")
     sp["anchors"].write_text(json.dumps(anchors, indent=2))
     sp["meta"].write_text(json.dumps({
+        "name": sp["dir"].name, "fingerprint": season_fingerprint(sp),
+        "task_version": taskinfo.task_version(), "prompt_sha": taskinfo.prompt_sha(),
+        "machine": taskinfo.machine_info(),
         "seed": args.seed, "configs": str(configs), "set": args.set, "world_set": args.world_set,
         "answers_engine": args.answers_engine, "anchor_repeats": args.anchor_repeats,
         "strong_engine": args.strong_engine,
@@ -319,11 +339,11 @@ def compile_submission(src, out, workdir, tsan=False):
     """Compiles the submission with the official flags plus the harness. Returns (ok, log)."""
     sources = sorted(p for p in Path(src).rglob("*.cpp"))
     if not sources:
-        return False, "no .cpp files in the submission"
+        return False, "no .cpp files in the submission", 0.0
     # A local copy of the interface header would silently replace the official one.
     shadowing = [p.name for p in Path(src).rglob("*") if p.name == "ticket_system.h"]
     if shadowing:
-        return False, "the submission must not contain its own ticket_system.h"
+        return False, "the submission must not contain its own ticket_system.h", 0.0
     flags = CXXFLAGS + (["-fsanitize=thread", "-g"] if tsan else [])
     objdir = Path(workdir) / ("obj_tsan" if tsan else "obj")
     objdir.mkdir(exist_ok=True)
@@ -333,8 +353,10 @@ def compile_submission(src, out, workdir, tsan=False):
         run_checked([CXX] + flags + [f"-I{TASK / 'include'}", f"-I{TASK / 'tools/common'}", "-c", s, "-o", o])
         objs.append(o)
     cmd = [CXX] + flags + [f"-I{TASK / 'include'}", f"-I{src}"] + sources + objs + ["-o", out]
+    start = time.monotonic()
     p = subprocess.run([str(c) for c in cmd], capture_output=True, text=True)
-    return p.returncode == 0, p.stderr[-6000:]
+    compile_s = time.monotonic() - start
+    return p.returncode == 0, p.stderr[-6000:], compile_s
 
 
 def log_score(x, base, strong):
@@ -372,12 +394,17 @@ def evaluate(args, src, out_path, lite):
     src = Path(src).resolve()
     threads = LITE_THREADS if lite else THREADS
     max_repeats = 1 if lite else MAX_REPEATS
+    meta = json.loads(sp["meta"].read_text())
     result = {"src": str(src), "mode": "lite" if lite else "full", "flags": scan_sources(src),
-              "measurements": {}, "scenarios": {}, "fatal": None}
+              "season": {"name": meta.get("name", sp["dir"].name), "fingerprint": season_fingerprint(sp)},
+              "evaluated": time.strftime("%Y-%m-%d %H:%M:%S"), "machine": taskinfo.machine_info(),
+              "sandbox": args.sandbox, "measurements": {}, "scenarios": {}, "fatal": None}
 
     with tempfile.TemporaryDirectory(dir=sp["dir"]) as work:
         bench = Path(work) / "railbench_submission"
-        ok, clog = compile_submission(src, bench, work)
+        ok, clog, compile_s = compile_submission(src, bench, work)
+        result["build"] = {"compile_s": round(compile_s, 2),
+                           "binary_bytes": bench.stat().st_size if ok else None}
         if not ok:
             result["fatal"] = "compile_error"
             result["compile_log"] = clog
@@ -385,7 +412,7 @@ def evaluate(args, src, out_path, lite):
 
         if not lite:
             tbench = Path(work) / "railbench_submission_tsan"
-            ok, clog = compile_submission(src, tbench, work, tsan=True)
+            ok, clog, _ = compile_submission(src, tbench, work, tsan=True)
             if not ok:
                 result["fatal"] = "compile_error"
                 result["compile_log"] = clog
@@ -433,13 +460,13 @@ def evaluate(args, src, out_path, lite):
                     if verdict["init_s"] > INIT_LIMIT_S:
                         result["fatal"] = "init_too_slow"
                         return finish(result, anchors, out_path, threads)
-                    runs.append(metrics_of(verdict, run.wall_s))
+                    runs.append(metrics_of(verdict, run))
                     score, _, _ = measurement_score(runs[-1], base, strong)
                     if score == 0 or run.wall_s > REPEAT_CUTOFF_S:
                         break
                 if failure:
                     break
-                entry = {"status": status}
+                entry = {"status": status, "timeout_s": round(timeout, 1), "mem_limit_mb": round(mem_limit)}
                 if runs and status == "ok":
                     entry.update(median_metrics(runs))
                 result["measurements"][key] = entry

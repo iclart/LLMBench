@@ -13,6 +13,7 @@ public configs and the public data with reference answers. No harness or
 reference source is included; the script fails if any source slips in.
 """
 import argparse
+import json
 import shutil
 import subprocess
 import sys
@@ -22,6 +23,8 @@ from pathlib import Path
 
 TASK = Path(__file__).resolve().parents[1]
 REPO = TASK.parents[1]
+sys.path.insert(0, str(TASK))
+import taskinfo  # noqa: E402
 CXX = "g++"
 CXXFLAGS = ["-O2", "-std=c++20", "-pthread"]
 SCENARIOS = ["daily", "spring", "refund_wave"]
@@ -97,6 +100,8 @@ def main():
         load = ws / f"data/{sc}.load"
         run([tools / "railgen", "load", world, TASK / f"configs/public/{sc}.cfg", a.seed + 1 + i, load])
         run([ref, "query", world, load, ws / f"data/{sc}.answers"])
+    (ws / taskinfo.VERSION_FILE).write_text(json.dumps({"task_version": taskinfo.task_version(),
+                                                       "public_seed": a.seed}) + "\n")
     check_whitelist(ws)
 
     if a.selftest:

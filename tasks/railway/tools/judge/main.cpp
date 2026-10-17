@@ -465,6 +465,27 @@ std::string pct_json(const Percentiles& p) {
 
 double ratio(uint64_t a, uint64_t b) { return b ? double(a) / double(b) : 1.0; }
 
+// Latency histogram with 4 linear sub-buckets per power of two: bucket
+// 4*m + s holds durations in [2^m * (1 + s/4), 2^m * (1 + (s+1)/4)).
+constexpr int kBucketsPerOctave = 4;
+constexpr int kHistBuckets = 32 * kBucketsPerOctave;
+constexpr int kTimelineBins = 50;
+
+int hist_bucket(uint32_t d) {
+  if (d == 0) return 0;
+  const int m = 31 - __builtin_clz(d);
+  const int sub = static_cast<int>((uint64_t(d - (1u << m)) * kBucketsPerOctave) >> m);
+  return m * kBucketsPerOctave + sub;
+}
+
+std::string counts_json(const std::vector<uint64_t>& v) {
+  size_t n = v.size();
+  while (n > 0 && v[n - 1] == 0) --n;
+  std::string o = "[";
+  for (size_t i = 0; i < n; ++i) o += (i ? "," : "") + std::to_string(v[i]);
+  return o + "]";
+}
+
 int run(int argc, char** argv) {
   std::vector<std::string> pos;
   std::string json_path;
@@ -506,10 +527,17 @@ int run(int argc, char** argv) {
 
   // Performance: main phase only.
   std::vector<uint32_t> lat_all, lat_op[3];
+  std::vector<uint64_t> hist[3], timeline(kTimelineBins, 0);
+  for (auto& h : hist) h.assign(kHistBuckets, 0);
   for (const Event& e : log.events) {
     if (e.phase != Phase::Main) continue;
     lat_all.push_back(e.dur);
     lat_op[int(e.op) % 3].push_back(e.dur);
+    ++hist[int(e.op) % 3][hist_bucket(e.dur)];
+    if (log.main_ns) {
+      const uint64_t bin = (e.start + e.dur) * kTimelineBins / log.main_ns;
+      ++timeline[std::min<uint64_t>(bin, kTimelineBins - 1)];
+    }
   }
   const Percentiles all = percentiles(lat_all), q = percentiles(lat_op[0]), b = percentiles(lat_op[1]),
                     r = percentiles(lat_op[2]);
@@ -524,6 +552,10 @@ int run(int argc, char** argv) {
   j += buf;
   j += "  \"latency\": {\"all\": " + pct_json(all) + ",\n              \"query\": " + pct_json(q) +
        ",\n              \"book\": " + pct_json(b) + ",\n              \"refund\": " + pct_json(r) + "},\n";
+  j += "  \"histogram\": {\"buckets_per_octave\": " + std::to_string(kBucketsPerOctave) +
+       ",\n                \"query\": " + counts_json(hist[0]) + ",\n                \"book\": " + counts_json(hist[1]) +
+       ",\n                \"refund\": " + counts_json(hist[2]) + "},\n";
+  j += "  \"timeline\": {\"bins\": " + std::to_string(kTimelineBins) + ", \"completed\": " + counts_json(timeline) + "},\n";
   for (int ph = 0; ph < 2; ++ph) {
     std::snprintf(buf, sizeof buf,
                   "  \"%s\": {\"books_ok\": %llu, \"sold_out\": %llu, \"window_rate\": %.4f, \"window_wanted\": %llu, "
