@@ -1,18 +1,20 @@
-// Booking quality (TASK.md 6): how many purchases succeed, how much of the
-// travel asked for they carry, and how much of the capacity of contested
-// train-days is sold. Shared by railjudge and railrun.
+// Booking quality (TASK.md 6): how many purchases succeed, how much travel
+// they carry, and how much of the capacity of contested train-days is sold.
+// Shared by railjudge and railrun.
 //
-// Satisfaction = purchases that got a ticket / purchase intents whose query
-// found at least one itinerary (the others could never be served).
-// Mileage      = the same ratio weighted by passengers x riding minutes of the
-// purchase's first itinerary, whichever itinerary was booked. Refusing long
-// trips to serve more short ones raises satisfaction and lowers mileage.
-// Utilization  = seat-minutes sold / seat-minutes on sale, over the
+// Satisfaction      = purchases that got a ticket / purchase intents whose
+// query found at least one itinerary (the others could never be served).
+// Passenger-minutes = the transport delivered (railways count passenger-km;
+// the world has no distances): passengers x riding minutes of every
+// successful purchase. Each purchase counts the riding minutes of its FIRST
+// itinerary, whichever itinerary was booked, so refusing fast trains to push
+// passengers onto slow ones gains nothing.
+// Utilization       = seat-minutes sold / seat-minutes on sale, over the
 // (train-day, class) pairs where some book was turned down for lack of seats
 // on that train-day (SoldOut, counting only the legs that were short) or was
 // Withheld (every leg). Seat-minutes of a ticket run from the arrival at its
 // boarding stop to the arrival at its alighting stop; sold seats are those of
-// main-phase orders still live when the main phase ends.
+// main-phase orders still live when the main phase ends. Shown, not scored.
 #pragma once
 
 #include <cstdint>
@@ -46,7 +48,7 @@ inline int64_t ride_minutes(const rail::Itinerary& it) {
 struct Quality {
   uint64_t purchases = 0, purchases_ok = 0, sold_out = 0, withheld = 0;
   std::set<std::pair<uint32_t, int>> unmet;  // (train-day, class) turned someone down
-  int64_t demand_minutes = 0, served_minutes = 0;  // passenger-minutes asked for / ticketed
+  int64_t demand_minutes = 0, passenger_minutes = 0;  // passenger-minutes asked for / ticketed
   int64_t sold_minutes = 0, capacity_minutes = 0;
 
   // One purchase whose query found `first`, its first itinerary.
@@ -55,11 +57,12 @@ struct Quality {
     ++purchases;
     purchases_ok += ok;
     demand_minutes += m;
-    served_minutes += ok ? m : 0;
+    passenger_minutes += ok ? m : 0;
   }
 
   double satisfaction() const { return purchases ? double(purchases_ok) / double(purchases) : 1.0; }
-  double mileage() const { return demand_minutes ? double(served_minutes) / double(demand_minutes) : 1.0; }
+  // Share of the passenger-minutes asked for that were carried.
+  double transport_share() const { return demand_minutes ? double(passenger_minutes) / double(demand_minutes) : 1.0; }
   // Negative when no train-day turned anyone down.
   double utilization() const { return capacity_minutes ? double(sold_minutes) / double(capacity_minutes) : -1.0; }
 

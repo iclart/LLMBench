@@ -16,7 +16,6 @@ it. Common options: --build DIR (CMake build tree with the tools),
 import argparse
 import hashlib
 import json
-import math
 import os
 import re
 import shutil
@@ -33,9 +32,11 @@ from pathlib import Path
 TASK = Path(__file__).resolve().parents[1]
 REPO = TASK.parents[1]
 sys.path.insert(0, str(TASK))
+sys.path.insert(0, str(TASK / "eval"))
+import scoring  # noqa: E402
 import taskinfo  # noqa: E402
+from scoring import SCENARIOS, measurement_score  # noqa: E402
 
-SCENARIOS = ["daily", "spring", "refund_wave"]
 THREADS = [1, 4, 16]
 LITE_THREADS = [4]
 MEM_BUDGET_MB = 1536          # contestant budget (TASK.md 8)
@@ -46,8 +47,6 @@ MAX_REPEATS = 5
 REPEAT_CUTOFF_S = 120         # no further repeats after a run this long
 TIMEOUT_FACTOR, TIMEOUT_SLACK_S = 1.2, 30
 TSAN_INTENTS = 4000
-THROUGHPUT_WEIGHT, LATENCY_WEIGHT = 0.7, 0.3
-PERF_WEIGHT, PREF_WEIGHT = 0.9, 0.1
 TSAN_EXIT = 66
 
 # Official contestant compile flags (TASK.md 1).
@@ -240,6 +239,7 @@ def metrics_of(verdict, run):
         "wall_s": run.wall_s,
         "maxrss_mb": run.maxrss_mb,
         "quiet": verdict["quiet"],
+        "quality": verdict["quality"],
         # For the report: latency percentiles, histograms and the throughput timeline.
         "dist": {"latency": lat, "histogram": verdict.get("histogram"), "timeline": verdict.get("timeline")},
     }
@@ -250,6 +250,7 @@ def median_metrics(runs):
     for key in SCALARS:
         out[key] = statistics.median(r[key] for r in runs)
     out["quiet"] = runs[0]["quiet"]  # the 1-thread run is deterministic
+    out["quality"] = runs[0]["quality"]
     out["runs"] = len(runs)
     out["repeats"] = [{key: r[key] for key in SCALARS} for r in runs]
     # Distributions of the repeat whose throughput is the (lower) median.
@@ -372,38 +373,13 @@ def compile_submission(src, out, workdir, tsan=False):
     return p.returncode == 0, p.stderr[-6000:], compile_s
 
 
-def log_score(x, base, strong):
-    """100 at the strong reference, 0 at the baseline, log-interpolated, not capped above."""
-    if x <= 0 or base <= 0 or strong <= 0:
-        return 0.0
-    span = math.log(strong / base)
-    if span <= 1e-9:
-        return 100.0 if x >= strong else 0.0
-    return max(0.0, 100.0 * math.log(x / base) / span)
-
-
-def latency_gain(m, base):
-    return math.sqrt((base["query_p99_ns"] / max(m["query_p99_ns"], 1)) * (base["book_p99_ns"] / max(m["book_p99_ns"], 1)))
-
-
-def measurement_score(m, base, strong):
-    thr = log_score(m["throughput"], base["throughput"], strong["throughput"])
-    lat = log_score(latency_gain(m, base), 1.0, latency_gain(strong, base))
-    return THROUGHPUT_WEIGHT * thr + LATENCY_WEIGHT * lat, thr, lat
-
-
-def preference_score(quiet, strong_quiet):
-    parts = []
-    for key in ("window_rate", "together_rate"):
-        ref = strong_quiet[key]
-        parts.append(quiet[key] / ref if ref > 0 else 1.0)
-    return 100.0 * sum(parts) / len(parts)
-
-
 def evaluate(args, src, out_path, lite):
     tools = Tools(args.build)
     sp = season_paths(args.season)
     anchors = json.loads(sp["anchors"].read_text())
+    if any("quality" not in m for m in anchors["strong"].values()):
+        raise SystemExit(f"season {sp['dir']} was prepared by an older version without booking quality; "
+                         "prepare it again")
     src = Path(src).resolve()
     threads = LITE_THREADS if lite else THREADS
     max_repeats = 1 if lite else MAX_REPEATS
@@ -488,32 +464,9 @@ def evaluate(args, src, out_path, lite):
 
 
 def finish(result, anchors, out_path, threads):
-    """Computes the scores (DESIGN.md 4) and writes the result."""
-    per = {}
-    perf_parts, pref_parts = [], []
-    pref_threads = 1 if 1 in threads else threads[0]
-    for sc in SCENARIOS:
-        failed = result["fatal"] is not None or result["scenarios"].get(sc, {}).get("failure") is not None
-        for t in threads:
-            key = f"{sc}/t{t}"
-            m = result["measurements"].get(key, {})
-            if failed or m.get("status") != "ok":
-                per[key] = {"score": 0.0, "throughput_score": 0.0, "latency_score": 0.0}
-            else:
-                s, thr, lat = measurement_score(m, anchors["baseline"][key], anchors["strong"][key])
-                per[key] = {"score": s, "throughput_score": thr, "latency_score": lat}
-            perf_parts.append(per[key]["score"])
-        pkey = f"{sc}/t{pref_threads}"
-        m = result["measurements"].get(pkey, {})
-        if failed or m.get("status") != "ok":
-            pref_parts.append(0.0)
-        else:
-            pref_parts.append(preference_score(m["quiet"], anchors["strong"][pkey]["quiet"]))
-    perf = sum(perf_parts) / len(perf_parts)
-    pref = sum(pref_parts) / len(pref_parts)
-    total = 0.0 if result["fatal"] else PERF_WEIGHT * perf + PREF_WEIGHT * pref
-    result["scores"] = {"total": total, "performance": perf, "preference": pref, "measurements": per,
-                        "preference_threads": pref_threads}
+    """Computes the scores (scoring.py) and writes the result."""
+    failed = [sc for sc in SCENARIOS if result["scenarios"].get(sc, {}).get("failure") is not None]
+    result["scores"] = scoring.score(result["measurements"], anchors, threads, failed, result["fatal"] is not None)
     result["needs_review"] = bool(result["flags"])
     Path(out_path).write_text(json.dumps(result, indent=2))
     log(summary(result))
@@ -522,18 +475,28 @@ def finish(result, anchors, out_path, threads):
 
 def summary(result):
     s = result["scores"]
-    lines = [f"total {s['total']:.1f}  (performance {s['performance']:.1f}, preference {s['preference']:.1f})"
-             f"  mode={result['mode']}"]
+    lines = [f"total {s['total']:.1f}  (performance {s['performance']:.1f}, transport {s['transport']:.1f}, "
+             f"preference {s['preference']:.1f})  mode={result['mode']}"]
     if result["fatal"]:
         lines.append(f"FATAL: {result['fatal']}")
     for sc in SCENARIOS:
         f = result["scenarios"].get(sc, {}).get("failure")
+        g = s["gates"].get(sc)
         if f:
             lines.append(f"{sc}: FAILED, {f}")
+        elif g and not g["passed"]:
+            lines.append(f"{sc}: scores 0, satisfaction {100 * g['satisfaction']:.1f}% is "
+                         f"{100 * g['ratio']:.1f}% of the strong reference's (at least "
+                         f"{100 * scoring.SATISFACTION_GATE:.0f}% needed)")
     for key, v in s["measurements"].items():
         m = result["measurements"].get(key, {})
         lines.append(f"  {key:16} {v['score']:6.1f}  (throughput {v['throughput_score']:5.1f}, latency "
                      f"{v['latency_score']:5.1f}) {m.get('status', '-')}")
+    for sc in SCENARIOS:
+        g = s["gates"].get(sc)
+        if g:
+            lines.append(f"  {sc:16} transport {s['transport_by_scenario'][sc]:6.1f}, satisfaction "
+                         f"{100 * g['ratio']:5.1f}% of the strong reference's")
     if result["flags"]:
         lines.append(f"NEEDS REVIEW: {len(result['flags'])} suspicious construct(s), e.g. "
                      f"{result['flags'][0]['file']}:{result['flags'][0]['line']} ({result['flags'][0]['reason']})")

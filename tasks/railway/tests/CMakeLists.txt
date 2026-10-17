@@ -145,6 +145,8 @@ rail_judge_case(rail_mutant_double_refund railbench_mutant_double_refund daily 4
 rail_judge_case(rail_mutant_wrong_query railbench_mutant_wrong_query daily 4 fail:query)
 rail_judge_case(rail_mutant_bad_seat railbench_mutant_bad_seat daily 4 fail:seat)
 rail_judge_case(rail_mutant_busy_sold_out railbench_mutant_busy_sold_out daily 4 fail:false_negative)
+# Withholding is a sales policy, not an error.
+rail_judge_case(rail_mutant_withhold_long railbench_mutant_withhold_long spring 4 pass)
 # Only wrong under contention: a single thread never sees another call running.
 rail_judge_case(rail_mutant_busy_sold_out_t1 railbench_mutant_busy_sold_out daily 1 pass)
 if(RAIL_TSAN)

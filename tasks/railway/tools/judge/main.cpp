@@ -613,11 +613,11 @@ int run(int argc, char** argv) {
     if (qu.utilization() >= 0) std::snprintf(util, sizeof util, "%.6f", qu.utilization());
     std::snprintf(buf, sizeof buf,
                   "  \"quality\": {\"purchases\": %llu, \"purchases_ok\": %llu, \"satisfaction\": %.6f, "
-                  "\"demand_passenger_minutes\": %lld, \"served_passenger_minutes\": %lld, \"mileage\": %.6f, "
+                  "\"passenger_minutes\": %lld, \"demand_passenger_minutes\": %lld, \"transport_share\": %.6f, "
                   "\"unmet_train_classes\": %zu, \"sold_seat_minutes\": %lld, \"capacity_seat_minutes\": %lld, "
                   "\"utilization\": %s},\n",
                   (unsigned long long)qu.purchases, (unsigned long long)qu.purchases_ok, qu.satisfaction(),
-                  (long long)qu.demand_minutes, (long long)qu.served_minutes, qu.mileage(),
+                  (long long)qu.passenger_minutes, (long long)qu.demand_minutes, qu.transport_share(),
                   qu.unmet.size(), (long long)qu.sold_minutes, (long long)qu.capacity_minutes, util);
     j += buf;
   }

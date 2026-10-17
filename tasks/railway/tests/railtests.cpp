@@ -242,7 +242,7 @@ void test_stub_links_against_interface() {
 // Regenerate with `railtests --print-golden` only when a format or generator
 // change is intended.
 const uint64_t kGoldenWorld = 0x421fd668499557ccull;
-const uint64_t kGoldenLoads[] = {0xbda5cc579bf9ec5cull, 0x3fe15e44eeea7d24ull, 0x612ee89b04ea37d5ull};
+const uint64_t kGoldenLoads[] = {0xbda5cc579bf9ec5cull, 0x42a520978e1635f4ull, 0x612ee89b04ea37d5ull};
 
 void test_golden_output(bool print) {
   const World w = make_world(kGoldenSeed);

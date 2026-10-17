@@ -256,7 +256,7 @@ class Verifier {
     switch (in.kind) {
       case IntentKind::Purchase: {
         ++st.purchases;
-        const uint64_t ok_before = st.purchases_ok;
+        const uint64_t ok_before = st.purchases_ok, withheld_before = st.withheld;
         rail::QueryResult r{};
         const rail::Status s = timed_query(in.query, &r, st);
         check_query(in.query, s, r);
@@ -278,8 +278,15 @@ class Verifier {
         }
         if (r.count) st.quality.add_purchase(in.passengers, r.items[0], st.purchases_ok > ok_before);
         if (tickets_ && st.purchases_ok == ok_before) {
-          std::fprintf(tickets_, "#%llu  purchase failed: %s\n", (unsigned long long)where_,
-                       r.count ? (std::to_string(r.count) + " itineraries, all sold out").c_str() : "no itinerary");
+          const uint64_t withheld = st.withheld - withheld_before;
+          std::string why = "no itinerary";
+          if (r.count) {
+            why = std::to_string(r.count) + " itineraries";
+            if (withheld == r.count) why += ", all withheld";
+            else if (withheld) why += ", " + std::to_string(withheld) + " withheld, the rest sold out";
+            else why += ", all sold out";
+          }
+          std::fprintf(tickets_, "#%llu  purchase failed: %s\n", (unsigned long long)where_, why.c_str());
         }
         break;
       }
@@ -458,7 +465,7 @@ class Verifier {
   FILE* tickets_ = nullptr;
 };
 
-void print_stats(const char* phase, const Stats& s) {
+void print_stats(const char* phase, const Stats& s, bool quality) {
   auto pct = [](uint64_t a, uint64_t b) { return b ? 100.0 * double(a) / double(b) : 0.0; };
   std::printf("%s: %llu queries, %llu books (%llu sold out, %llu withheld, %llu invalid), %llu refunds, %.3f s in engine\n",
               phase, (unsigned long long)s.queries, (unsigned long long)s.books, (unsigned long long)s.sold_out,
@@ -467,10 +474,12 @@ void print_stats(const char* phase, const Stats& s) {
               (unsigned long long)s.purchases, pct(s.purchases_ok, s.purchases), pct(s.window_got, s.window_wanted),
               (unsigned long long)s.window_wanted, pct(s.together_got, s.together_wanted),
               (unsigned long long)s.together_wanted);
-  if (s.quality.purchases) {
+  if (quality && s.quality.purchases) {
     const double u = s.quality.utilization();
-    std::printf("  satisfaction %.2f%%; mileage %.2f%%; utilization %s over %zu turned-down train-day classes\n",
-                100 * s.quality.satisfaction(), 100 * s.quality.mileage(), u < 0 ? "n/a" : (std::to_string(100 * u).substr(0, 5) + "%").c_str(),
+    std::printf("  satisfaction %.2f%%; %lld passenger-minutes carried (%.2f%% of those asked for); "
+                "utilization %s over %zu turned-down train-day classes\n",
+                100 * s.quality.satisfaction(), (long long)s.quality.passenger_minutes,
+                100 * s.quality.transport_share(), u < 0 ? "n/a" : (std::to_string(100 * u).substr(0, 5) + "%").c_str(),
                 s.quality.unmet.size());
   }
 }
@@ -493,8 +502,8 @@ int run_verify_mode(const Options& o, const World& world, rail::TicketSystem& sy
     std::printf("FAILED: %s\n", e.what());
     return 1;
   }
-  print_stats("main ", main_stats);
-  if (!tickets) print_stats("quiet", quiet_stats);
+  print_stats("main ", main_stats, true);
+  if (!tickets) print_stats("quiet", quiet_stats, false);
   std::printf("OK\n");
   return 0;
 }

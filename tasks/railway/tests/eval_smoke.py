@@ -2,14 +2,17 @@
 """Smoke test for eval/railway_eval.py on a tiny season.
 
 Prepares a season, then checks that the baseline submission evaluates
-cleanly, that the do-nothing stub is rejected scenario by scenario, and that a
-submission shadowing ticket_system.h does not compile.
+cleanly, that the do-nothing stub is rejected scenario by scenario, that an
+engine refusing every sale (Withheld) is legal but scores 0 under the
+satisfaction gate, and that a submission shadowing ticket_system.h does not
+compile.
 """
 import argparse
 import json
 import shutil
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 TASK = Path(__file__).resolve().parents[1]
@@ -43,6 +46,31 @@ def main():
     shutil.copy(TASK / "reference/baseline/baseline.cpp", subs / "baseline")
     (subs / "stub").mkdir()
     shutil.copy(TASK / "stub/solution.cpp", subs / "stub")
+    (subs / "withhold").mkdir()
+    shutil.copy(TASK / "reference/baseline/baseline.cpp", subs / "withhold/baseline.inc")
+    (subs / "withhold/withhold.cpp").write_text(textwrap.dedent('''\
+        // Sells nothing: books, then refunds and answers Withheld.
+        #define create_ticket_system create_baseline_ticket_system
+        #include "baseline.inc"
+        #undef create_ticket_system
+        namespace rail {
+        class Withholding final : public TicketSystem {
+         public:
+          void init(const WorldData& w) override { inner_->init(w); }
+          Status query(const QueryRequest& q, QueryResult* r) override { return inner_->query(q, r); }
+          Status refund(uint64_t id) override { return inner_->refund(id); }
+          Status book(const BookRequest& b, BookResult* r) override {
+            const Status st = inner_->book(b, r);
+            if (st != Status::Ok) return st;
+            inner_->refund(r->order_id);
+            return Status::Withheld;
+          }
+         private:
+          TicketSystem* inner_ = create_baseline_ticket_system();
+        };
+        TicketSystem* create_ticket_system() { return new Withholding(); }
+        }  // namespace rail
+        '''))
     (subs / "shadow").mkdir()
     shutil.copy(TASK / "stub/solution.cpp", subs / "shadow")
     shutil.copy(TASK / "include/ticket_system.h", subs / "shadow")
@@ -52,12 +80,24 @@ def main():
     r = json.loads((work / "baseline.json").read_text())
     if r["fatal"] or any(s.get("failure") for s in r["scenarios"].values()):
         sys.exit(f"baseline submission should pass: {r['fatal']} {r['scenarios']}")
+    if not all(g and g["passed"] for g in r["scores"]["gates"].values()) or r["scores"]["transport"] <= 0:
+        sys.exit(f"the baseline must pass the satisfaction gate and carry passengers: {r['scores']['gates']}")
 
     run("evaluate", "--season", str(season), "--src", str(subs / "stub"), "--out", str(work / "stub.json"), "--lite")
     r = json.loads((work / "stub.json").read_text())
     failed = [sc for sc, s in r["scenarios"].items() if s.get("failure")]
     if len(failed) != 3 or r["scores"]["total"] != 0:
         sys.exit(f"stub should fail every scenario: {r['scenarios']}")
+
+    run("evaluate", "--season", str(season), "--src", str(subs / "withhold"), "--out", str(work / "withhold.json"),
+        "--lite")
+    r = json.loads((work / "withhold.json").read_text())
+    if r["fatal"] or any(s.get("failure") for s in r["scenarios"].values()):
+        sys.exit(f"withholding is legal and must pass the judge: {r['fatal']} {r['scenarios']}")
+    gates = r["scores"]["gates"]
+    if any(g is None or g["passed"] for g in gates.values()) or r["scores"]["total"] != 0:
+        sys.exit(f"refusing every sale must fail the satisfaction gate everywhere: {gates}, "
+                 f"total {r['scores']['total']}")
 
     run("evaluate", "--season", str(season), "--src", str(subs / "shadow"), "--out", str(work / "shadow.json"),
         "--lite", expect_ok=False)
