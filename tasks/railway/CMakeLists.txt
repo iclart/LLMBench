@@ -23,6 +23,11 @@ if(MINGW)
   target_link_options(railgen PRIVATE -static)
 endif()
 
+# Linux-only: the trusted runner used inside the evaluation sandbox.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(railexec tools/exec/main.cpp)
+endif()
+
 add_executable(railjudge tools/judge/main.cpp)
 target_link_libraries(railjudge PRIVATE railcommon)
 if(MINGW)

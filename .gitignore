@@ -1,7 +1,8 @@
 # Build trees
 /build*/
 
-# Generated data
+# Generated data and evaluation seasons
+seasons/
 *.world
 *.load
 

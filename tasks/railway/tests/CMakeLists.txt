@@ -129,3 +129,12 @@ rail_judge_case(rail_mutant_busy_sold_out_t1 railbench_mutant_busy_sold_out dail
 if(RAIL_TSAN)
   rail_judge_case(rail_mutant_data_race railbench_mutant_data_race daily 4 bench-fail)
 endif()
+
+# ---- evaluation orchestrator (Linux only: needs railexec)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(EVAL_SMOKE_ARGS --build ${PROJECT_BINARY_DIR} --work ${DATA}/eval_smoke)
+  if(RAIL_HAVE_STRONG)
+    list(APPEND EVAL_SMOKE_ARGS --strong)
+  endif()
+  add_test(NAME rail_eval_smoke COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/eval_smoke.py ${EVAL_SMOKE_ARGS})
+endif()

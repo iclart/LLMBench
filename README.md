@@ -52,6 +52,22 @@ build/tasks/railway/railbench_baseline pub.world daily.load 4 run.log
 build/tasks/railway/railjudge pub.world daily.load ref.answers run.log   # 输出 JSON，出错时退出码为 1
 ```
 
+### 正式评测
+
+`tasks/railway/eval/railway_eval.py`（仅依赖 Python 标准库，需要 Linux；官方评测还需要 `bwrap`）：
+
+```sh
+E="python3 tasks/railway/eval/railway_eval.py"
+# 1. 准备一季：生成数据、参考答案、压测器内存基准、基线与强参考锚点
+$E prepare  --season seasons/s1 --configs private/railway/hidden --seed <赛季种子>
+# 2. 评测一份提交（src/ 目录）；--lite 为快照用的精简流程
+$E evaluate --season seasons/s1 --src path/to/src --out result.json
+# 3. 评测一个参赛单位的全部快照（按目录名排序，最后一个按完整流程）
+$E snapshots --season seasons/s1 --snapshots path/to/snapshots --out results/
+```
+
+每次运行都在 `bwrap` 沙箱里（无网络、无 `/proc`、只读文件系统），绑定到 `--cpus` 指定的核，由 `railexec` 汇报真实的退出状态和峰值内存。
+
 ThreadSanitizer 构建：`cmake -S . -B build-tsan -DRAIL_TSAN=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo`。
 
 同一个配置和种子在 Linux 和 Windows 上生成逐字节相同的文件，由测试里的哈希检查保证。
