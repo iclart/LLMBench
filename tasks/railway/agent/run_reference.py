@@ -24,6 +24,8 @@ from pathlib import Path
 
 TASK = Path(__file__).resolve().parents[1]
 REPO = TASK.parents[1]
+sys.path.insert(0, str(TASK))
+import taskinfo  # noqa: E402
 ENGINES = {
     "baseline": TASK / "reference/baseline/baseline.cpp",
     "strong": REPO / "private/railway/strong/strong.cpp",
@@ -52,6 +54,10 @@ def main():
         with tarfile.open(a.workspace) as tar:
             tar.extractall(out, filter="data")
 
+    try:
+        workspace_version = json.loads((ws / taskinfo.VERSION_FILE).read_text())
+    except (OSError, ValueError):
+        workspace_version = {}
     start = time.time()
     shutil.copytree(ws / "src", out / "snapshots/000/src")
     for f in (ws / "src").iterdir():
@@ -68,12 +74,16 @@ def main():
             sys.exit(f"`make check` failed; see {out / 'make_check.log'}")
     shutil.copytree(ws / "src", out / "snapshots/001_final/src")
 
-    run = {"tool": "reference", "engine": a.engine, "start": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start)),
+    run = {"tool": "reference", "engine": a.engine, "model": f"reference/{a.engine}", "mode": "reference",
+           "start": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start)), "start_epoch": start,
+           "task_version": workspace_version.get("task_version"), "public_seed": workspace_version.get("public_seed"),
+           "prompt_sha": taskinfo.prompt_sha(), "machine": taskinfo.machine_info(),
            "elapsed_min": round((time.time() - start) / 60, 2), "end_reason": "submitted", "submitted": True,
            "make_check_passed": check, "snapshots": ["000", "001_final"]}
     (out / "run.json").write_text(json.dumps(run, indent=2))
     print(f"done: {out}\nscore it with: python3 {TASK / 'eval/railway_eval.py'} snapshots --season <season> "
-          f"--snapshots {out / 'snapshots'} --out {out / 'results'}", file=sys.stderr)
+          f"--snapshots {out / 'snapshots'} --out {out / 'results'}\nthen build the report: python3 "
+          f"{TASK / 'report/report.py'} --season <season> --runs {out.parent} --out <report dir>", file=sys.stderr)
 
 
 if __name__ == "__main__":

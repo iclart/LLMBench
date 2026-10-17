@@ -563,6 +563,8 @@ def cmd_snapshots(args):
     (out / "curve.json").write_text(json.dumps(curve, indent=2))
     for c in curve:
         log(f"{c['snapshot']:>12} {c['mode']:4} {c['total']:6.1f} {c['fatal'] or ''}")
+    log(f"report: python3 {TASK / 'report/report.py'} --season {args.season} --runs {out.parent.parent} "
+        f"--out <report dir>")
 
 
 def main():

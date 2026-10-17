@@ -22,7 +22,13 @@ What this script handles:
   agent process killed before the final snapshot is taken;
 - resuming: if the agent goes idle without submitting, it is told the time
   left and asked to continue (up to --max-resumes times);
-- usage: tokens and cost from the session's messages, in RUN_DIR/run.json.
+- usage: tokens and cost from the session's messages, in RUN_DIR/run.json,
+  with the run's timeline (time notices, resumes, snapshots), the task
+  version and the machine, for the report (report/report.py);
+- secrets: the variables from --env-file reach the agent's shell too (OpenCode
+  1.19.3's server mode neither runs plugin shell hooks nor uses $SHELL, and the
+  agent can read its own processes' environment anyway); report.py redacts
+  their values from published transcripts.
 
 Modes. Trial (default): runs as the invoking user; only OpenCode's own
 permission rules apply, but its bash tool can still reach the network and
@@ -49,6 +55,9 @@ import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
+import taskinfo  # noqa: E402
+
 POLL_S = 2
 IDLE_GRACE_S = 5          # idle this long (and not submitted) before resuming
 QUICK_IDLE_S = 30         # a resume that goes idle sooner counts as a stall
@@ -149,6 +158,20 @@ class Run:
 
     def server_alive(self):
         return self.server is not None and self.server.poll() is None
+
+    def wait_for_model(self):
+        """The model catalog loads lazily: a prompt sent before it is ready fails
+        with "Model unavailable", so ask for it until the model shows up."""
+        provider, _, model = self.a.model.partition("/")
+        for _ in range(60):
+            try:
+                models = self.api.call("GET", "/api/model").get("data") or []
+                if any(m.get("providerID") == provider and m.get("id") == model for m in models):
+                    return
+            except (OSError, ValueError, urllib.error.URLError):
+                pass
+            time.sleep(1)
+        log(f"warning: OpenCode does not list {self.a.model}; check the name with `opencode models`")
 
     def create_session(self):
         provider, _, model = self.a.model.partition("/")
@@ -319,6 +342,10 @@ def main():
     out = Path(a.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     ws, home = prepare(a, out)
+    try:  # read before the agent can touch it
+        workspace_version = json.loads((ws / taskinfo.VERSION_FILE).read_text())
+    except (OSError, ValueError):
+        workspace_version = {}
     run = Run(a, out, ws, home)
     if a.strict:
         check_strict(a, run)
@@ -328,6 +355,7 @@ def main():
         sys.exit(f"`opencode --version` failed:\n{ver.stderr[-2000:]}")
 
     run.start_server()
+    run.wait_for_model()
     run.create_session()
     start = time.time()
     t0 = time.monotonic()
@@ -344,6 +372,11 @@ def main():
     log(f"live view: http://<this machine>:{a.port}/  user opencode  password {a.password}  (also in {out / 'web.txt'})")
     log(f"session {run.session}; forced submission at {clock(end_wall)}")
     prompt = (HERE / "PROMPT.md").read_text()
+    events = []
+
+    def event(kind, **kw):
+        events.append({"t_min": round((time.monotonic() - t0) / 60, 3), "kind": kind, **kw})
+
     run.say(f"{prompt}\n（系统消息）现在是 {clock(start)}，强制收卷时间是 {clock(end_wall)}，"
             f"共 {a.minutes:g} 分钟。")
 
@@ -365,6 +398,7 @@ def main():
         left = max(1, round((deadline - now) / 60))
         while marks and elapsed_min >= marks[0]:
             snapshot(ws, out / f"snapshots/{snapshot_name(marks[0])}")
+            event("snapshot", name=snapshot_name(marks[0]))
             log(f"snapshot {snapshot_name(marks[0])}")
             marks.pop(0)
         try:
@@ -372,6 +406,7 @@ def main():
                 notices.pop(0)
                 run.say(f"（系统消息）现在是 {clock(time.time())}，距离强制收卷还有 {left} 分钟。"
                         + ("请确保 src/ 始终处于能编译、能通过 `make check` 的状态。" if left <= 10 else ""), steer=True)
+                event("notice", left_min=left)
                 log(f"time notice: {left} min left")
             run.reject_questions()
             if run.active():
@@ -391,6 +426,7 @@ def main():
             idle_since, last_resume = None, now
             run.say(f"（系统消息）你停下来了，但还没有交卷。现在是 {clock(time.time())}，距离强制收卷还有 {left} 分钟。"
                     f"请继续：先确保 `make check` 全部通过，再优化性能。确认完成后可以运行 `make submit` 提前交卷。")
+            event("resume", n=resumes)
             log(f"agent idle without submitting: resumed ({resumes})")
         except (OSError, ValueError, urllib.error.URLError) as e:
             log(f"api error: {e}")
@@ -401,6 +437,7 @@ def main():
     except (OSError, ValueError, urllib.error.URLError) as e:
         log(f"could not read usage: {e}")
     run.stop()
+    event(end_reason)
     elapsed = time.monotonic() - t0
     final = f"{int(elapsed // 60):03d}_final"
     snapshot(ws, out / f"snapshots/{final}")
@@ -409,7 +446,9 @@ def main():
     result = {
         "tool": "opencode", "tool_version": version, "api": "v2", "model": a.model, "variant": a.variant,
         "mode": "strict" if a.strict else "trial", "minutes": a.minutes,
-        "start": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start)),
+        "start": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start)), "start_epoch": start,
+        "task_version": workspace_version.get("task_version"), "public_seed": workspace_version.get("public_seed"),
+        "prompt_sha": taskinfo.prompt_sha(prompt), "machine": taskinfo.machine_info(), "events": events,
         "elapsed_min": round(elapsed / 60, 2), "end_reason": end_reason, "submitted": end_reason == "submitted",
         "resumes": resumes, "session": run.session, "usage": usage,
         "snapshots": sorted(p.name for p in (out / "snapshots").iterdir()),
