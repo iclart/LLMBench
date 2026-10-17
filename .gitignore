@@ -5,7 +5,7 @@
 *.world
 *.load
 
-# Hidden workload configs and seeds are never committed (see docs/DESIGN.md).
+# Hidden configs live in the private submodule; never put them here (see docs/DESIGN.md).
 tasks/*/configs/hidden/
 
 # Editors / OS

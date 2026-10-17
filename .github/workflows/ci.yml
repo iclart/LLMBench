@@ -17,7 +17,7 @@ jobs:
         run: ctest --test-dir build --output-on-failure
       - name: Test under ASan and UBSan
         run: |
-          cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug \
+          cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all"
           cmake --build build-asan -j4
           ctest --test-dir build-asan --output-on-failure

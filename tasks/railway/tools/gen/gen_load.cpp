@@ -88,10 +88,18 @@ class LoadGenerator {
         class_picker_(picker_of(p.class_weight)),
         pax_picker_(picker_of(p.pax_weight)),
         day_picker_(picker_of(p.day_weight)) {
-    // Station popularity: Zipf-like weights over a random ranking.
+    // Station popularity: Zipf-like weights over a ranking by size (lines x
+    // trains served), ties broken at random. Big hubs draw the most demand.
+    std::vector<uint64_t> size(station_count_, 0), lines_at(station_count_, 0);
+    for (const auto& line : world.lines)
+      for (uint32_t s : line.stations) ++lines_at[s];
+    for (const auto& t : world.trains)
+      for (const auto& stop : t.stops) ++size[stop.station];
     std::vector<uint32_t> rank(station_count_);
     std::iota(rank.begin(), rank.end(), 0);
     rng_.shuffle(rank);
+    for (uint32_t s = 0; s < station_count_; ++s) size[s] *= lines_at[s];
+    std::stable_sort(rank.begin(), rank.end(), [&](uint32_t a, uint32_t b) { return size[a] > size[b]; });
     std::vector<uint64_t> weights(station_count_);
     for (uint32_t i = 0; i < station_count_; ++i) weights[rank[i]] = 1000000 / (uint64_t(i) + 1) + 1;
     station_picker_ = WeightedPicker(weights);

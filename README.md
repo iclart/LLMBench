@@ -8,14 +8,18 @@
 
 | 题目 | 目录 | 状态 |
 |---|---|---|
-| 铁路订票系统：高并发、区间票、换乘规划、选座 | [`tasks/railway/`](tasks/railway/) | 里程碑 1：规格与数据 |
+| 铁路订票系统：高并发、区间票、换乘规划、选座 | [`tasks/railway/`](tasks/railway/) | 里程碑 2：两个参考实现 |
 
 ## 铁路订票系统
 
 - [`TASK.md`](tasks/railway/TASK.md)：交给 Agent 的完整规格。
 - [`include/ticket_system.h`](tasks/railway/include/ticket_system.h)：选手要实现的 C++ 接口。
-- `tools/`：负载生成器 `railgen` 与共用代码；压测器和裁判在后续里程碑加入。
-- `configs/public/`：公开负载配置（规模约为隐藏负载的 1/10）。隐藏配置放在被 `.gitignore` 的 `configs/hidden/`，不入库。
+- `tools/`：负载生成器 `railgen`、单线程驱动 `railrun` 与共用代码；并发压测器和裁判在后续里程碑加入。
+- `reference/baseline/`：基线参考实现（0 分锚点，也是 `query` 交叉比对的判定基准）。
+- `configs/public/`：公开负载配置（规模约为隐藏负载的 1/10）。
+- 强参考实现和隐藏配置在私有子模块 `private/`（[iclart/LLMBenchReference](https://github.com/iclart/LLMBenchReference)）中，没有权限时其余部分照常构建。
+
+需要强参考时：`git submodule update --init private`。
 
 ### 构建与测试
 
@@ -35,6 +39,10 @@ C=tasks/railway/configs/public
 $G world $C/world.cfg 1 pub.world
 $G load  pub.world $C/daily.cfg 2 daily.load      # 另有 spring.cfg、refund_wave.cfg
 $G stats pub.world daily.load
+
+R=build/tasks/railway/railrun_baseline   # 或 railrun_strong
+$R verify pub.world daily.load --limit 2000          # 单线程重放并校验
+$R query  pub.world daily.load out.answers --random 1000 7
 ```
 
 同一个配置和种子在 Linux 和 Windows 上生成逐字节相同的文件，由测试里的哈希检查保证。

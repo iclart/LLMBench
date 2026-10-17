@@ -219,8 +219,8 @@ void test_stub_links_against_interface() {
 // were produced on Linux; CI checks them on Windows too.
 // Regenerate with `railtests --print-golden` only when a format or generator
 // change is intended.
-const uint64_t kGoldenWorld = 0x0eff95e924dd4239ull;
-const uint64_t kGoldenLoads[] = {0x8b5814a40b224a9full, 0x1a12237d54fb0845ull, 0x08c08a37736da9fbull};
+const uint64_t kGoldenWorld = 0xe2849ac65f046600ull;
+const uint64_t kGoldenLoads[] = {0xad4f6e884b7daf8dull, 0xd44e0d7970eef469ull, 0x845f8a79a4ddb587ull};
 
 void test_golden_output(bool print) {
   const World w = make_world(kGoldenSeed);

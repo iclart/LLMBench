@@ -16,6 +16,7 @@ struct WorldParams {
   int64_t lines, isolated_lines;
   int64_t line_len_min, line_len_max;
   int64_t transfer_min, transfer_max;
+  int64_t hub_bias;
   int64_t trains_per_day, min_trains_per_line;
   int64_t express_permille, express_keep_transfer_permille, express_keep_other_permille;
   int64_t partial_permille;
@@ -30,6 +31,7 @@ struct WorldParams {
     line_len_max = c.get("line_len_max", line_len_min, rail::kMaxStopsPerTrain);
     transfer_min = c.get("transfer_min", 1, line_len_min);
     transfer_max = c.get("transfer_max", transfer_min, line_len_min);
+    hub_bias = c.get("hub_bias", 0, 1000000);
     trains_per_day = c.get("trains_per_day", 1, 1000000);
     min_trains_per_line = c.get("min_trains_per_line", 1, 1000);
     if (min_trains_per_line * lines > trains_per_day) {
@@ -91,6 +93,7 @@ World generate_world(Config& cfg, uint64_t seed) {
   std::vector<std::vector<uint32_t>> line_stations(p.lines);
   std::vector<std::vector<int64_t>> segment_minutes(p.lines);
   std::vector<uint32_t> connected_pool;  // stations on non-isolated lines
+  std::vector<int64_t> lines_through;    // lines serving each station so far
   uint32_t station_count = 0;
 
   for (int64_t li = 0; li < p.lines; ++li) {
@@ -102,26 +105,32 @@ World generate_world(Config& cfg, uint64_t seed) {
       std::vector<int64_t> positions(len);
       std::iota(positions.begin(), positions.end(), 0);
       line_rng.shuffle(positions);
+      // Preferential attachment: stations already served by several lines
+      // attract new ones, so hubs emerge and the line graph stays shallow.
+      std::vector<uint64_t> weights(connected_pool.size());
+      for (size_t i = 0; i < connected_pool.size(); ++i) {
+        const uint64_t extra = static_cast<uint64_t>(lines_through[connected_pool[i]] - 1);
+        weights[i] = 1 + static_cast<uint64_t>(p.hub_bias) * extra;
+      }
+      const WeightedPicker picker(weights);
       std::vector<uint32_t> chosen;
       while (static_cast<int64_t>(chosen.size()) < m) {
-        const uint32_t s = connected_pool[line_rng.below(connected_pool.size())];
+        const uint32_t s = connected_pool[picker.pick(line_rng)];
         if (std::find(chosen.begin(), chosen.end(), s) == chosen.end()) chosen.push_back(s);
       }
+      for (uint32_t s : chosen) ++lines_through[s];
       for (int64_t i = 0; i < m; ++i) seq[positions[i]] = chosen[i];
     }
     for (auto& s : seq) {
       if (s != kUnset) continue;
       s = station_count++;
+      lines_through.push_back(1);
       if (!isolated[li]) connected_pool.push_back(s);
     }
     line_stations[li] = std::move(seq);
     segment_minutes[li].resize(len - 1);
     for (auto& m : segment_minutes[li]) m = line_rng.range(p.segment_min, p.segment_max);
   }
-
-  std::vector<int> lines_through(station_count, 0);
-  for (const auto& seq : line_stations)
-    for (uint32_t s : seq) ++lines_through[s];
 
   // ---- trains: distribute across lines, longer lines get more trains
   std::vector<int64_t> trains_on_line(p.lines, p.min_trains_per_line);
