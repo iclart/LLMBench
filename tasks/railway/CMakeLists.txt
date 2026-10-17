@@ -29,6 +29,7 @@ function(add_rail_engine name)
 endfunction()
 
 add_rail_engine(baseline reference/baseline/baseline.cpp)
+add_rail_engine(oracle reference/oracle/oracle.cpp)
 add_rail_engine(stub stub/solution.cpp)
 
 # The strong reference lives in a private repository, checked out as the

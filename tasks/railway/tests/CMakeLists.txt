@@ -26,26 +26,32 @@ foreach(s IN LISTS SCENARIOS)
   set_tests_properties(rail_gen_${s} PROPERTIES FIXTURES_REQUIRED rail_world FIXTURES_SETUP rail_data)
 endforeach()
 
-# The baseline is slow by design, so it only replays a prefix of each workload.
 foreach(s IN LISTS SCENARIOS)
   add_test(NAME rail_verify_baseline_${s}
-           COMMAND railrun_baseline verify ${DATA}/pub.world ${DATA}/${s}.load --limit 500)
+           COMMAND railrun_baseline verify ${DATA}/pub.world ${DATA}/${s}.load --limit 5000)
   set_tests_properties(rail_verify_baseline_${s} PROPERTIES FIXTURES_REQUIRED rail_data)
 endforeach()
+# The oracle is exhaustive and slow, so it only replays a short prefix.
+add_test(NAME rail_verify_oracle COMMAND railrun_oracle verify ${DATA}/pub.world ${DATA}/spring.load --limit 300)
+set_tests_properties(rail_verify_oracle PROPERTIES FIXTURES_REQUIRED rail_data)
+
+# query() answers of every engine must match the oracle's byte for byte.
+add_test(NAME rail_answers_oracle
+         COMMAND railrun_oracle query ${DATA}/pub.world ${DATA}/daily.load ${DATA}/oracle.answers --random 800 7)
+set_tests_properties(rail_answers_oracle PROPERTIES FIXTURES_REQUIRED rail_data FIXTURES_SETUP rail_answers)
+set(CROSSCHECK_ENGINES baseline)
 
 if(RAIL_HAVE_STRONG)
   foreach(s IN LISTS SCENARIOS)
     add_test(NAME rail_verify_strong_${s} COMMAND railrun_strong verify ${DATA}/pub.world ${DATA}/${s}.load)
     set_tests_properties(rail_verify_strong_${s} PROPERTIES FIXTURES_REQUIRED rail_data)
   endforeach()
-
-  # query() answers must match byte for byte between the two references.
-  add_test(NAME rail_answers_baseline
-           COMMAND railrun_baseline query ${DATA}/pub.world ${DATA}/daily.load ${DATA}/baseline.answers
-                   --random 800 7)
-  set_tests_properties(rail_answers_baseline PROPERTIES FIXTURES_REQUIRED rail_data FIXTURES_SETUP rail_answers)
-  add_test(NAME rail_crosscheck_query
-           COMMAND railrun_strong query ${DATA}/pub.world ${DATA}/daily.load ${DATA}/strong.answers
-                   --random 800 7 --expect ${DATA}/baseline.answers)
-  set_tests_properties(rail_crosscheck_query PROPERTIES FIXTURES_REQUIRED "rail_data;rail_answers")
+  list(APPEND CROSSCHECK_ENGINES strong)
 endif()
+
+foreach(e IN LISTS CROSSCHECK_ENGINES)
+  add_test(NAME rail_crosscheck_${e}
+           COMMAND railrun_${e} query ${DATA}/pub.world ${DATA}/daily.load ${DATA}/${e}.answers
+                   --random 800 7 --expect ${DATA}/oracle.answers)
+  set_tests_properties(rail_crosscheck_${e} PROPERTIES FIXTURES_REQUIRED "rail_data;rail_answers")
+endforeach()
