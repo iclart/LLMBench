@@ -559,6 +559,11 @@ def main():
     p.set_defaults(func=cmd_snapshots)
 
     args = ap.parse_args()
+    if args.cmd != "prepare":
+        sp = season_paths(args.season)
+        if not sp["meta"].exists():
+            raise SystemExit(f"season {sp['dir']} is not prepared (no season.json); run "
+                             f"`railway_eval.py prepare --season {args.season} ...` first, or check the path")
     if args.sandbox == "none":
         log("warning: running without a sandbox (results are not official)")
     args.func(args)
