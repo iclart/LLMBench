@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Evaluation orchestration for the LLMBench railway task (docs/DESIGN.md).
 
-  railway_eval.py prepare   --season DIR --configs DIR --seed N [--set key=value]... [--anchor-repeats N]
+  railway_eval.py prepare   --season DIR --configs DIR --seed N [--set key=value]...
+                            [--anchor-repeats N] [--baseline-repeats N]
   railway_eval.py evaluate  --season DIR --src DIR --out RESULT.json [--lite]
   railway_eval.py snapshots --season DIR --snapshots DIR --out DIR
 
@@ -25,6 +26,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from concurrent.futures import ThreadPoolExecutor
 import time
 from pathlib import Path
 
@@ -268,18 +270,25 @@ def cmd_prepare(args):
     sets = sum((["--set", s] for s in args.set), [])
     world_sets = sum((["--set", s] for s in args.world_set), [])
 
+    # Nothing before the anchors is timed, so it runs in parallel.
+    def parallel(commands):
+        with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as pool:
+            for f in [pool.submit(run_checked, c) for c in commands]:
+                f.result()
+
     log(f"generating world and workloads (seed {args.seed})")
     run_checked([tools.railgen, "world", configs / "world.cfg", args.seed, sp["world"]] + world_sets)
+    gen = []
     for i, sc in enumerate(SCENARIOS):
-        run_checked([tools.railgen, "load", sp["world"], configs / f"{sc}.cfg", args.seed + 1 + i, sp["load"][sc]] + sets)
-        run_checked([tools.railgen, "load", sp["world"], configs / f"{sc}.cfg", args.seed + 11 + i, sp["tsan_load"][sc],
-                     "--set", f"intents={TSAN_INTENTS}", "--set", "quiet_intents=500"])
+        gen.append([tools.railgen, "load", sp["world"], configs / f"{sc}.cfg", args.seed + 1 + i, sp["load"][sc]] + sets)
+        gen.append([tools.railgen, "load", sp["world"], configs / f"{sc}.cfg", args.seed + 11 + i, sp["tsan_load"][sc],
+                    "--set", f"intents={TSAN_INTENTS}", "--set", "quiet_intents=500"])
+    parallel(gen)
 
+    log("reference answers")
     answer_engine = tools.engine("railrun", args.answers_engine)
-    for sc in SCENARIOS:
-        log(f"reference answers: {sc}")
-        run_checked([answer_engine, "query", sp["world"], sp["load"][sc], sp["answers"][sc]])
-        run_checked([answer_engine, "query", sp["world"], sp["tsan_load"][sc], sp["tsan_answers"][sc]])
+    parallel([[answer_engine, "query", sp["world"], sp[load][sc], sp[ans][sc]]
+              for sc in SCENARIOS for load, ans in (("load", "answers"), ("tsan_load", "tsan_answers"))])
 
     anchors = {"harness_mb": {}, "baseline": {}, "strong": {}}
     with tempfile.TemporaryDirectory(dir=sp["dir"]) as work:
@@ -288,12 +297,15 @@ def cmd_prepare(args):
             run, _ = bench_once(tools, stub, sp, sc, max(THREADS), args, timeout=None, workdir=work)
             anchors["harness_mb"][sc] = run.maxrss_mb
             log(f"harness footprint {sc}: {run.maxrss_mb:.0f} MB")
-        for engine, impl in (("baseline", "baseline"), ("strong", args.strong_engine)):
+        # The baseline serializes every call, so it varies little between runs and
+        # a run takes minutes; the strong reference takes seconds.
+        for engine, impl, repeats in (("baseline", "baseline", args.baseline_repeats),
+                                      ("strong", args.strong_engine, args.anchor_repeats)):
             bench = tools.engine("railbench", impl)
             for sc in SCENARIOS:
                 for t in THREADS:
                     runs = []
-                    for _ in range(args.anchor_repeats):
+                    for _ in range(repeats):
                         run, verdict = bench_once(tools, bench, sp, sc, t, args, timeout=None, workdir=work)
                         if run.exit != 0 or not verdict or not verdict["ok"]:
                             raise SystemExit(f"anchor {engine} {sc} t={t} failed: exit {run.exit}, "
@@ -311,6 +323,7 @@ def cmd_prepare(args):
         "machine": taskinfo.machine_info(),
         "seed": args.seed, "configs": str(configs), "set": args.set, "world_set": args.world_set,
         "answers_engine": args.answers_engine, "anchor_repeats": args.anchor_repeats,
+        "baseline_repeats": args.baseline_repeats,
         "strong_engine": args.strong_engine,
         "sandbox": args.sandbox, "cpus": args.cpus, "created": time.strftime("%Y-%m-%d %H:%M:%S"),
     }, indent=2))
@@ -565,7 +578,8 @@ def main():
     p.add_argument("--seed", type=int, required=True)
     p.add_argument("--set", action="append", default=[], help="workload config override, key=value")
     p.add_argument("--world-set", action="append", default=[], help="world config override, key=value")
-    p.add_argument("--anchor-repeats", type=int, default=3)
+    p.add_argument("--anchor-repeats", type=int, default=3, help="runs per strong anchor (median)")
+    p.add_argument("--baseline-repeats", type=int, default=1, help="runs per baseline anchor (median)")
     p.add_argument("--answers-engine", default="strong", choices=["strong", "baseline"])
     p.add_argument("--strong-engine", default="strong",
                    help="engine for the 100-point anchor; only smoke tests without the private submodule "
