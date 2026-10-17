@@ -7,8 +7,9 @@ Agent 可以用两种方式运行：**OpenCode 自动运行**（`run_opencode.py
 | 文件 | 作用 |
 |---|---|
 | `PROMPT.md` | 发给 Agent 的提示词 |
-| `package_workspace.py` | 打包工作区：`TASK.md`、接口头文件、空实现、`Makefile`、预编译的压测器库和工具、公开数据与标准答案；带源码白名单检查 |
-| `workspace/Makefile` | 工作区里的 `make` / `make check` / `make bench` / `make time` / `make submit` |
+| `package_workspace.py` | 打包工作区：`TASK.md`、接口头文件、空实现、`Makefile`、预编译的压测器库（含 TSan 版）和工具、公开数据与标准答案、`make score` 用的计分脚本和本机参考测量；带源码白名单检查 |
+| `workspace/Makefile` | 工作区里的 `make` / `make check` / `make bench` / `make tickets` / `make score` / `make tsan` / `make time` / `make submit` |
+| `workspace/railscore.py` | `make score`：用官方公式（`eval/scoring.py`）在公开负载上估分 |
 | `run_opencode.py` | 通过 OpenCode 的 HTTP API 运行 Agent（支持 OpenCode 1.x 和 2.x）：快照、时间提醒、提前交卷、强制收卷、自动续跑、统计 token 和费用；网页实时观看 |
 | `run_manual.py` | 人工模式：用任意 Agent 工具（Claude Code、Codex CLI、Cursor……），运行器负责计时、快照、提醒文本、交卷和收卷 |
 | `transcript.py` | 把各工具的会话日志转成统一格式（目前支持 OpenCode 和 Claude Code），供报告使用 |
@@ -95,7 +96,9 @@ ANTHROPIC_API_KEY=...
 python3 tasks/railway/agent/package_workspace.py --out ~/llmbench/workspace --selftest
 ```
 
-`--selftest` 会确认空实现能编译、基线能通过 `make check`（需要几分钟）。
+`--selftest` 会确认空实现能编译、基线能通过 `make check`、`make tsan` 和 `make score`（需要几分钟）。
+
+打包时会在本机把基线和强参考在公开负载上各跑一遍（1、4 线程），把结果写进 `data/anchors.json`，供 Agent 用 `make score` 估分。这一步约 10 分钟，大部分是基线；**请在运行 Agent 的同一台机器上打包**，否则估分会有偏差。没有强参考（私有子模块）时加 `--anchors none`，工作区里的 `make score` 会提示不可用。
 
 ## 2. 先用参考实现空跑一遍（推荐）
 

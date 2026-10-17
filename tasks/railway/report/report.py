@@ -33,12 +33,17 @@ HERE = Path(__file__).resolve().parent
 TASK = HERE.parent
 sys.path.insert(0, str(TASK))
 sys.path.insert(0, str(TASK / "agent"))
+sys.path.insert(0, str(TASK / "eval"))
+import scoring  # noqa: E402
 import taskinfo  # noqa: E402
 import transcript as transcript_format  # noqa: E402
 
 SCENARIOS = ["daily", "spring", "refund_wave"]
 THREADS = [1, 4, 16]
 KEYS = [f"{sc}/t{t}" for sc in SCENARIOS for t in THREADS]
+# Total of a submission matching the strong reference exactly (transport at par).
+REF_TOTAL = (scoring.PERF_WEIGHT * 100 + scoring.TRANSPORT_WEIGHT * scoring.TRANSPORT_PAR[1]
+             + scoring.PREF_WEIGHT * 100)
 STANDARD_MINUTES = 150
 CURVE_STEP_MIN = 5
 SOURCE_SUFFIXES = {".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".inc"}
@@ -193,6 +198,9 @@ def measurement_status(res, key):
     m = res.get("measurements", {}).get(key)
     if not m:
         return "missing"
+    gate = ((res.get("scores") or {}).get("gates") or {}).get(sc)
+    if m.get("status") == "ok" and gate and not gate["passed"]:
+        return "gate"
     return m.get("status", "missing")
 
 
@@ -255,7 +263,8 @@ def final_summary(r):
     s = f["scores"]
     statuses = {k: measurement_status(f, k) for k in KEYS}
     return {
-        "total": s["total"], "performance": s["performance"], "preference": s["preference"],
+        "total": s["total"], "performance": s["performance"], "transport": s.get("transport"),
+        "preference": s["preference"],
         "fatal": f.get("fatal"), "needs_review": f.get("needs_review"),
         "scores": {k: (s["measurements"].get(k) or {}).get("score", 0.0) for k in KEYS},
         "statuses": statuses,
@@ -594,8 +603,30 @@ def correctness(f):
     return {"scenarios": out, "logs": logs, "flags": f.get("flags") or []}
 
 
+def quality_threads(f):
+    s = f.get("scores") or {}
+    return s.get("quality_threads", s.get("preference_threads", 1))
+
+
+def booking_quality(f, season):
+    """Satisfaction (the gate), passenger-minutes (transport) and utilization per scenario."""
+    qt = quality_threads(f)
+    s = f.get("scores") or {}
+    rows = []
+    for sc in SCENARIOS:
+        k = f"{sc}/t{qt}"
+        q = (f.get("measurements", {}).get(k) or {}).get("quality")
+        sq = (season["anchors"]["strong"].get(k) or {}).get("quality")
+        gate = (s.get("gates") or {}).get(sc)
+        rows.append({"scenario": sc, "q": q, "strong": sq, "gate": gate,
+                     "transport": (s.get("transport_by_scenario") or {}).get(sc),
+                     "transport_ratio": (s.get("transport_ratio") or {}).get(sc)})
+    return {"threads": qt, "rows": rows, "gate": scoring.SATISFACTION_GATE,
+            "floor": scoring.TRANSPORT_FLOOR[0], "ceil": scoring.TRANSPORT_CEIL[0]}
+
+
 def preference(f, season):
-    pt = (f.get("scores") or {}).get("preference_threads", 1)
+    pt = quality_threads(f)
     rows = []
     for sc in SCENARIOS:
         k = f"{sc}/t{pt}"
@@ -654,6 +685,8 @@ def build_index(season, runs):
             "key": list(key), "label": group_label(key, NAMES), "manual": key[3], "n": len(rs),
             "mean": mean(totals), "min": min(totals), "max": max(totals),
             "perf": mean(f["performance"] for f in finals), "pref": mean(f["preference"] for f in finals),
+            "transport": mean(f["transport"] for f in finals) if all(f["transport"] is not None for f in finals)
+            else None,
             "pass_rate": mean(1 - f["gated"] / len(KEYS) for f in finals),
             "elapsed": mean(r["run"].get("elapsed_min") for r in rs),
             "ends": dict(ends), "cost": mean(costs) if costs else None,
@@ -683,17 +716,18 @@ def build_index(season, runs):
                    "harness_mb": a.get("harness_mb")},
         "groups": rows,
         "others": [run_meta(r) for r in runs if r["category"] != "ranked"],
-        "keys": KEYS,
+        "keys": KEYS, "ref_total": REF_TOTAL,
     }
 
 
 def build_run_page(r, season, full):
-    page = {"page": "run", "season": {"name": season["name"]}, "keys": KEYS, "run": run_meta(r),
+    page = {"page": "run", "season": {"name": season["name"]}, "keys": KEYS, "ref_total": REF_TOTAL, "run": run_meta(r),
             "events": r["run"].get("events") or [], "machine": r["run"].get("machine")}
     if r["final"]:
         page["measurements"] = measurement_rows(r, season)
         page["correctness"] = correctness(r["final"])
         page["preference"] = preference(r["final"], season)
+        page["quality"] = booking_quality(r["final"], season)
         page["build"] = r["final"].get("build")
         page["eval_machine"] = r["final"].get("machine")
     t = load_transcript(r["dir"])

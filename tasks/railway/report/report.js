@@ -60,6 +60,7 @@
     ok: ["✓", "正常", "var(--st-ok)"], timeout: ["⏱", "超时", "var(--st-warn)"],
     wrong: ["✗", "判错", "var(--st-crit)"], crash: ["⚠", "崩溃", "var(--st-crash)"],
     memory: ["⚠", "超内存", "var(--st-crash)"], fatal: ["⛔", "致命", "var(--st-crit)"],
+    gate: ["◐", "满足率不足", "var(--st-warn)"],
     missing: ["–", "无数据", "var(--st-ok)"],
   };
   function statusChip(st) {
@@ -308,7 +309,7 @@
         svg.append(sv("line", { class: "grid", x1: X(v), x2: X(v), y1: m.t, y2: H - m.b }));
         svg.append(sv("text", { x: X(v), y: H - m.b + 16, "text-anchor": "middle" }, compact(v)));
       }
-      for (const [v, label] of [[0, "0 基线"], [100, "100 强参考"]]) {
+      for (const [v, label] of [[0, "0"], [DATA.ref_total, `${fmt(DATA.ref_total)} 强参考`]]) {
         svg.append(sv("line", { class: "ref", x1: X(v), x2: X(v), y1: m.t - 6, y2: H - m.b, "stroke-width": 1.5 }));
         svg.append(sv("text", { x: X(v), y: m.t - 10, "text-anchor": v ? "middle" : "start", class: "label-ink" }, label));
       }
@@ -511,7 +512,7 @@
       "正式运行需要：正式模式（--strict）、时限 150 分钟、用本赛季评分、任务包和提示词版本与赛季一致。其他运行列在“其他运行”里。"));
 
     app.append(section("board", "排行",
-      note("点 = 平均分，横线 = 最差到最好，短竖线 = 每次运行（空心表示该次有场景被正确性闸门清零）。0 分 = 基线，100 分 = 强参考，不封顶。"),
+      note(`点 = 平均分，横线 = 最差到最好，短竖线 = 每次运行（空心表示该次有场景判错、崩溃或超内存）。总分 = 性能 75% + 周转量 15% + 偏好 10%；和强参考完全一样的实现得 ${fmt(DATA.ref_total)} 分，不封顶。`),
       card(groups.length ? dotWhisker(groups) : note("无数据"))));
 
     const anyCost = groups.some((g) => g.cost);
@@ -520,19 +521,20 @@
       { label: "#", num: true, sort: (g) => g.rank }, { label: "参赛单位", sort: (g) => g.label },
       { label: "n", num: true, sort: (g) => g.n }, { label: "平均", num: true, sort: (g) => g.mean },
       { label: "最差", num: true, sort: (g) => g.min }, { label: "最好", num: true, sort: (g) => g.max },
-      { label: "性能", num: true, sort: (g) => g.perf }, { label: "偏好", num: true, sort: (g) => g.pref },
-      { label: "通过率", num: true, sort: (g) => g.pass_rate, title: "9 组测量中没有被正确性闸门清零的比例" },
+      { label: "性能", num: true, sort: (g) => g.perf }, { label: "周转量", num: true, sort: (g) => g.transport },
+      { label: "偏好", num: true, sort: (g) => g.pref },
+      { label: "通过率", num: true, sort: (g) => g.pass_rate, title: "9 组测量中没有被清零的比例" },
       { label: "平均用时", num: true, sort: (g) => g.elapsed }, { label: "结束方式" },
       { label: "平均费用", num: true, sort: (g) => g.cost }, { label: "分 / 美元", num: true, sort: (g) => g.per_usd },
       { label: "平均 token", num: true, sort: (g) => g.tokens }, { label: "工具版本" }],
       groups.map((g, i) => (g.rank = i + 1, {
         data: g, cells: [i + 1,
           el("span", {}, el("span", { class: "key", style: `background:${slotVar(g.slot)}` }), g.label, g.manual ? el("span", { class: "chip", style: "margin-left:6px" }, "人工") : null),
-          g.n, fmt(g.mean), fmt(g.min), fmt(g.max), fmt(g.perf), fmt(g.pref), fmt(g.pass_rate * 100, 0) + "%",
+          g.n, fmt(g.mean), fmt(g.min), fmt(g.max), fmt(g.perf), fmt(g.transport), fmt(g.pref), fmt(g.pass_rate * 100, 0) + "%",
           fmtMin(g.elapsed), ends(g), fmtUsd(g.cost), g.per_usd ? fmt(g.per_usd) : "–", compact(g.tokens),
           el("span", {}, g.versions.join(", ") || "–", g.versions.length > 1 ? el("span", { class: "chip fail", title: "这一组的运行用了不同版本的工具", style: "margin-left:4px" }, "多版本") : null)],
       }))),
-      note("通过率 = 9 组测量中没有被正确性闸门清零的比例。分 / 美元 = 平均分 ÷ 平均费用。点击表头排序。"))));
+      note("性能：0 = 基线，100 = 强参考。周转量：与强参考持平 70 分，少 7% 为 0，多 3% 为满分 100。通过率 = 9 组测量中没有被清零的比例（判错、崩溃、超内存，或订票满足率低于强参考的 85%）。分 / 美元 = 平均分 ÷ 平均费用。点击表头排序。"))));
 
     // heatmap
     const keys = DATA.keys;
@@ -548,7 +550,7 @@
             (failed ? "✗ " : "") + fmt(g.heat[k], 0));
         })))));
     app.append(section("heat", "分项得分", card(el("div", { class: "scroll-x" }, heat),
-      note("每格是该组测量的平均分（0 = 基线，100 = 强参考）。✗ 表示至少一次运行在该组被正确性闸门清零（判错、崩溃、超内存或致命错误）。颜色越深分数越高，100 以上同色。"))));
+      note("每格是该组测量的平均性能分（0 = 基线，100 = 强参考）。✗ 表示至少一次运行在该组被清零（判错、崩溃、超内存、致命错误，或订票满足率低于强参考的 85%）。颜色越深分数越高，100 以上同色。"))));
 
     const pts = groups.filter((g) => g.cost > 0).map((g) => ({ x: g.cost, y: g.mean, label: g.label, slot: g.slot, per: g.per_usd }));
     app.append(section("cost", "分数与费用", card(pts.length ? scatter(pts) : note("没有费用数据（OpenCode 自定义提供商未配置价格，或人工模式未填写费用）。"),
@@ -557,7 +559,7 @@
     app.append(section("time", "分数随时间", card(lineChart({
       series: groups.map((g) => ({ name: g.label, color: slotVar(g.slot), points: g.curve, step: true })),
       x: { min: 0, max: 150, fmt: (v) => `${v}`, label: "分钟", unit: " 分钟" }, y: { min: 0, label: "平均分", fmt: (v) => compact(v) },
-      refs: [{ y: 100, label: "强参考" }], height: 280, fmtTip: (s, p) => fmt(p[1]),
+      refs: [{ y: DATA.ref_total, label: "强参考" }], height: 280, fmtTip: (s, p) => fmt(p[1]),
       table: { headers: ["分钟", ...groups.map((g) => g.label)], rows: (groups[0]?.curve || []).map((p, i) => [p[0], ...groups.map((g) => fmt(g.curve[i][1]))]) },
     }), note("每个参赛单位各次运行在同一时刻的快照得分取平均。中间快照用精简评测（只测 4 线程、不跑 TSan），最后一张是完整评测，两者不完全可比。"))));
 
@@ -605,7 +607,7 @@
     const u = R.usage || {};
     const st = A?.stats || {};
     app.append(section("overview", "概览", el("div", { class: "tiles" },
-      tile("总分", F ? fmt(F.total) : "–", F ? `性能 ${fmt(F.performance)} · 偏好 ${fmt(F.preference)}` : null, true),
+      tile("总分", F ? fmt(F.total) : "–", F ? `性能 ${fmt(F.performance)} · 周转量 ${fmt(F.transport)} · 偏好 ${fmt(F.preference)}` : null, true),
       tile("结束方式", END[R.end_reason] || R.end_reason || "–", `用时 ${fmtMin(R.elapsed_min)}`),
       tile("续跑次数", R.resumes ?? "–"),
       tile("费用", fmtUsd(u.cost), u.source === "manual" ? "人工填写" : null),
@@ -624,7 +626,7 @@
       series: [{ name: "快照得分（隐藏负载）", color, points: curve.map((p) => [p.t, p.total, p]), step: true, markers: true, extendTo: Math.max(R.elapsed_min || 0, ...curve.map((p) => p.t)),
         hollow: (p) => p[2].mode !== "full" }],
       x: { min: 0, max: Math.max(R.minutes || 150, R.elapsed_min || 0), label: "分钟", unit: " 分钟", fmt: (v) => `${Math.round(v)}` },
-      y: { min: 0, label: "总分" }, refs: [{ y: 100, label: "强参考" }], vlines, height: 240, legend: false,
+      y: { min: 0, label: "总分" }, refs: [{ y: DATA.ref_total, label: "强参考" }], vlines, height: 240, legend: false,
       fmtTip: (s, p) => `${fmt(p[1])}（${p[2].name}，${p[2].mode === "full" ? "完整评测" : "精简评测"}）`,
       table: { headers: ["快照", "分钟", "总分", "评测"], rows: curve.map((p) => [p.name, fmt(p.t), fmt(p.total), p.mode]) },
     }) : note("没有评分结果"), note("实心点 = 完整评测，空心点 = 精简评测（只测 4 线程、不跑 TSan），两者不完全可比。竖线是时间提醒、续跑和交卷 / 收卷。"));
@@ -707,7 +709,23 @@
         C.flags.map((f) => ({ data: f, cells: [`${f.file}:${f.line}`, f.reason, el("code", {}, f.text)] }))));
       const pref = card(el("h3", {}, `座位偏好（${P.threads} 线程运行的静默阶段）`), table([{ label: "场景" }, { label: "靠窗满足率", num: true }, { label: "强参考", num: true }, { label: "同行满足率", num: true }, { label: "强参考", num: true }],
         P.rows.map((r) => ({ data: r, cells: [SCEN[r.scenario], pct(r.window), pct(r.strong_window), pct(r.together), pct(r.strong_together)] }))));
-      app.append(section("correct", "正确性与偏好", corr, pref));
+      const Q = DATA.quality;
+      const ratio = (a, b) => (isNum(a) && isNum(b) && b > 0 ? a / b : null);
+      const qual = Q && card(el("h3", {}, `订票质量（${Q.threads} 线程运行的主阶段）`), table([
+        { label: "场景" }, { label: "满足率", num: true, title: "买到票的购票请求 ÷ 查询到方案的购票请求" }, { label: "强参考", num: true },
+        { label: "门槛", title: `不低于强参考的 ${fmt(Q.gate * 100, 0)}%，否则整个场景清零` },
+        { label: "周转量（人·分钟）", num: true }, { label: "÷ 强参考", num: true }, { label: "周转量分", num: true },
+        { label: "利用率", num: true, title: "拒绝过订票的车次-日期-席别上，卖出的座位分钟 ÷ 运力（仅展示）" }, { label: "强参考", num: true },
+        { label: "拒售", num: true, title: "返回 Withheld 的订票次数" }],
+        Q.rows.map((r) => {
+          const q = r.q || {}, sq = r.strong || {}, sr = ratio(q.satisfaction, sq.satisfaction);
+          const gate = r.gate ? (r.gate.passed ? el("span", { class: "status" }, `✓ ${pct(r.gate.ratio)}`) : el("span", { class: "status", style: "color:var(--st-crit)" }, `✗ ${pct(r.gate.ratio)}`)) : (isNum(sr) ? pct(sr) : "–");
+          return { data: r, cells: [SCEN[r.scenario], pct(q.satisfaction), pct(sq.satisfaction), gate,
+            compact(q.passenger_minutes), pct(isNum(r.transport_ratio) ? r.transport_ratio : ratio(q.passenger_minutes, sq.passenger_minutes)),
+            fmt(r.transport), pct(q.utilization), pct(sq.utilization), isNum(q.withheld) ? q.withheld : "–"] };
+        })),
+        note(`周转量 = 买到票的旅客人数 × 所查询第一个方案的乘车分钟。与强参考持平得 70 分，少 ${fmt((1 - Q.floor) * 100, 0)}% 为 0 分，多 ${fmt((Q.ceil - 1) * 100, 0)}% 为满分 100。利用率只展示，不计分。`));
+      app.append(section("correct", "正确性与订票质量", corr, ...(qual ? [qual] : []), pref));
     }
 
     // activity

@@ -117,6 +117,7 @@ th.sortable[data-dir="asc"]::after { content: " ▲"; font-size: 10px; }
 th.sortable[data-dir="desc"]::after { content: " ▼"; font-size: 10px; }
 tbody tr:hover td { background: var(--wash); }
 td.heat { text-align: center; font-variant-numeric: tabular-nums; border: 2px solid var(--surface); }
+td:first-child { white-space: nowrap; }
 
 .key { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: baseline; }
 .line-key { display: inline-block; width: 14px; height: 2px; border-radius: 1px; margin-right: 6px; vertical-align: middle; }
