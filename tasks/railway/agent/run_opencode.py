@@ -3,7 +3,7 @@
 
   run_opencode.py --workspace DIR|TAR.GZ --out RUN_DIR --model provider/model
                   [--minutes 150] [--snapshot-every 30] [--user NAME] [--env-file FILE]
-                  [--opencode PATH] [--variant V] [--max-resumes 20]
+                  [--opencode PATH] [--variant V] [--max-resumes 20] [--opencode-config FILE]
 
 - Copies the packaged workspace to RUN_DIR/workspace and starts
   `opencode run` there with PROMPT.md, non-interactively.
@@ -16,6 +16,15 @@
   resumed with a "N minutes left" message (up to --max-resumes times).
 - Afterwards the session is exported and token usage and cost are summarised
   in RUN_DIR/run.json.
+
+Models: --model is a `provider/model` id from `opencode models`. It is also
+written to the run's config as both `model` and `small_model`, so OpenCode
+never falls back to another provider's model for titles or summaries. The
+agent runs with its own HOME, so credentials saved by `opencode providers
+login` are not visible to it: pass API keys with --env-file. A custom
+provider (e.g. an OpenAI-compatible endpoint) goes in a JSON file given to
+--opencode-config, which is merged into the run's config; its permission
+settings cannot be loosened that way.
 
 With --user (requires root) the agent runs as that dedicated account, so it
 cannot read anything that account cannot (keep the LLMBench checkout out of
@@ -207,6 +216,17 @@ def snapshot(ws, dest):
         (dest / "src").mkdir(parents=True)
 
 
+def opencode_config(a):
+    cfg = json.loads(json.dumps(OPENCODE_CONFIG))
+    if a.opencode_config:
+        extra = json.loads(Path(a.opencode_config).read_text())
+        extra.pop("permission", None)  # the rules are not negotiable
+        cfg.update(extra)
+    cfg["model"] = a.model
+    cfg["small_model"] = a.model
+    return cfg
+
+
 def prepare(a, out):
     if out.exists() and any(out.iterdir()):
         sys.exit(f"{out} is not empty")
@@ -222,7 +242,7 @@ def prepare(a, out):
         if not ws.exists():
             sys.exit("the archive must contain a top-level workspace/ directory")
     home = out / "home"
-    (home / ".config/opencode/opencode.json").write_text(json.dumps(OPENCODE_CONFIG, indent=2))
+    (home / ".config/opencode/opencode.json").write_text(json.dumps(opencode_config(a), indent=2))
     if a.user:
         u = pwd.getpwnam(a.user)
         for p in [ws, home, *ws.rglob("*"), *home.rglob("*")]:
@@ -246,6 +266,7 @@ def main():
     ap.add_argument("--env-file", help="KEY=VALUE lines, e.g. the provider API key")
     ap.add_argument("--opencode", default=shutil.which("opencode") or "opencode")
     ap.add_argument("--max-resumes", type=int, default=20)
+    ap.add_argument("--opencode-config", help="JSON merged into the run's opencode config, e.g. a custom provider")
     a = ap.parse_args()
     if a.user and os.geteuid() != 0:
         sys.exit("--user requires running this script as root")

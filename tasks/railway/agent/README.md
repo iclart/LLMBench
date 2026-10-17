@@ -17,7 +17,7 @@
 ```sh
 git clone --recurse-submodules https://github.com/iclart/LLMBench.git && cd LLMBench
 cmake -S . -B build && cmake --build build -j && ctest --test-dir build -j4   # 确认全部通过
-npm install -g opencode-ai          # 已用 1.19.3 测试
+npm install -g opencode-ai          # 已用 1.19.3 测试；换版本后先确认 `opencode run --help` 里仍有 --dir/--model/--format/--session/--auto
 sudo useradd -m llmagent            # Agent 专用账户
 chmod 750 ~                         # 确保 llmagent 读不到 LLMBench（里面有强参考和隐藏配置）
 ```
@@ -29,6 +29,29 @@ ANTHROPIC_API_KEY=...
 ```
 
 用 `opencode models` 查看可用的模型名，格式是 `provider/model`。
+
+## 配置模型
+
+`--model` 是 OpenCode 的模型 ID，格式为 `provider/model`，用 `opencode models`（或 `opencode models <provider>`）查看；列表来自 models.dev，`opencode models --refresh` 可以更新。运行器会把它同时写进本次运行配置的 `model` 和 `small_model`，避免 OpenCode 偷偷调用别家的小模型来起标题、做摘要（那部分用量不会算到被测模型头上，也会被网络限制挡住）。
+
+**API 密钥只能用 `--env-file` 传入。**运行器给 Agent 单独的 `HOME`，所以你用 `opencode providers login` 保存的凭据它看不到。常见的环境变量：`ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、`OPENROUTER_API_KEY`、`DEEPSEEK_API_KEY` 等，以 OpenCode 对应提供商的要求为准。
+
+**自定义提供商**（中转站、自部署的 OpenAI 兼容接口等）写成 JSON 文件，用 `--opencode-config` 合并进本次运行的配置，例如：
+
+```json
+{
+  "provider": {
+    "myproxy": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "My endpoint",
+      "options": { "baseURL": "https://llm.example.com/v1", "apiKey": "{env:MYPROXY_API_KEY}" },
+      "models": { "my-model": { "name": "My Model", "limit": { "context": 128000, "output": 16000 } } }
+    }
+  }
+}
+```
+
+然后 `--model myproxy/my-model`，并在 `--env-file` 里写上 `MYPROXY_API_KEY=...`。这个文件里的 `permission` 设置会被忽略，规则不能被放宽；别忘了把 `llm.example.com` 加进 `vm_netguard.sh` 的放行域名。
 
 ## 1. 打包工作区
 
