@@ -264,7 +264,7 @@ class Judge {
     }
     if (st == rail::Status::SoldOut) {
       ++sold_out[ph];
-      SoldOut so{e.start, e.start + e.dur, b.seat_class, b.passenger_count, b.leg_count, {}, &e};
+      SoldOut so{e.start, event_end(e), b.seat_class, b.passenger_count, b.leg_count, {}, &e};
       std::copy(legs, legs + b.leg_count, so.legs);
       sold_outs_.push_back(so);
       return;
@@ -286,7 +286,7 @@ class Judge {
     Order o{};
     o.phase = e.phase;
     o.book_start = e.start;
-    o.book_end = e.start + e.dur;
+    o.book_end = event_end(e);
     o.leg_count = b.leg_count;
     const SeatBlock& sb = log_.seat_blocks[e.seats];
     const uint32_t order = uint32_t(orders_.size());
@@ -361,11 +361,11 @@ class Judge {
       }
       if (ok) {
         o.refund_start = ok->start;
-        o.refund_end = ok->start + ok->dur;
+        o.refund_end = event_end(*ok);
       }
       for (const Event* e : events) {
         if (static_cast<rail::Status>(e->status) != rail::Status::NotFound) continue;
-        const uint64_t s = e->start, end = e->start + e->dur;
+        const uint64_t s = e->start, end = event_end(*e);
         // Certainly live during the call: booked before it, not refunded before it ended.
         if (o.book_end < s && o.refund_start >= end) {
           err_.add("refund", where(*e) + ": NotFound for live order " + std::to_string(e->value));
@@ -386,8 +386,9 @@ class Judge {
     }
   }
 
-  // Could `a` have been released before `b` was taken?
-  bool released_before(const Order& a, const Order& b) const { return a.refund_start < b.book_end; }
+  // Could `a` have been released before `b` was taken? Equal timestamps
+  // could be either order.
+  bool released_before(const Order& a, const Order& b) const { return a.refund_start <= b.book_end; }
 
   void check_oversell() {
     for (size_t td = 0; td < seats_.size(); ++td) {

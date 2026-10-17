@@ -37,6 +37,14 @@ struct Event {
                     // audit: number of passengers
   Phase phase;
 };
+
+// When the call returned, in ns. A saturated duration (a call slower than
+// about 4.3 s, e.g. a thread starved on a lock) means "some time later":
+// the judge then treats the call as possibly still running, which is the
+// permissive reading for every check.
+constexpr uint64_t kOpenEnd = UINT64_MAX / 2;
+inline uint64_t event_end(const Event& e) { return e.dur == UINT32_MAX ? kOpenEnd : e.start + e.dur; }
+
 static_assert(sizeof(Event) == 32, "Event layout");
 
 struct SeatBlock {
