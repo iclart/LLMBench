@@ -36,7 +36,9 @@ read any file that user can. Strict (--strict, root): runs as the dedicated
 account --user, which must not be able to read the LLMBench checkout, and
 requires vm_netguard.sh to be active for it. Official results use --strict.
 
-Tested with OpenCode 1.19.3.
+Works with OpenCode 1.x (tested with 1.19.3, npm `opencode-ai`) and 2.x
+(tested with 2.0.30, npm `@opencode/cli`); the two differ in the config schema
+and in a few API request shapes, chosen from `opencode --version`.
 """
 import argparse
 import base64
@@ -51,6 +53,7 @@ import sys
 import tarfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -66,7 +69,7 @@ MAX_STALLS = 3
 FINAL_NOTICES_MIN = (10, 2)
 NETGUARD_TABLE = "llmbench_guard"
 
-# Tool permissions for the agent (OpenCode config schema, checked with 1.19.3).
+# Tool permissions for the agent (OpenCode 1.x config schema, checked with 1.19.3).
 PERMISSIONS = {
     "edit": "allow",
     "bash": "allow",
@@ -76,6 +79,23 @@ PERMISSIONS = {
     "external_directory": "deny",
     "doom_loop": "allow",
 }
+
+# The same rules for OpenCode 2.x: ordered, the last matching rule wins. The
+# catch-all allow also removes the default "ask" for .env files: nobody
+# answers prompts here. 2.x allows paths outside the workspace by default.
+PERMISSIONS_V2 = [
+    {"action": "*", "resource": "*", "effect": "allow"},
+    {"action": "webfetch", "resource": "*", "effect": "deny"},
+    {"action": "websearch", "resource": "*", "effect": "deny"},
+    {"action": "question", "resource": "*", "effect": "deny"},
+    {"action": "external_directory", "resource": "*", "effect": "deny"},
+]
+# Built-in agents append their own rules after the global ones (build allows
+# questions, explore allows web access), so each gets the denials again.
+BUILTIN_AGENTS_V2 = ("build", "plan", "general", "explore")
+# The agent's shell commands see only these variables (2.x can replace the
+# shell environment per session, which keeps API keys out of it).
+SHELL_ENV = ("PATH", "HOME", "LANG", "TERM", "USER", "LOGNAME", "TMPDIR")
 
 
 def log(msg):
@@ -99,7 +119,8 @@ def read_env_file(path):
 class Api:
     """Minimal client for OpenCode's v2 HTTP API."""
 
-    def __init__(self, port, password):
+    def __init__(self, port, password, v2=False):
+        self.v2 = v2
         self.base = f"http://127.0.0.1:{port}"
         self.auth = "Basic " + base64.b64encode(f"opencode:{password}".encode()).decode()
 
@@ -112,7 +133,9 @@ class Api:
         return json.loads(text) if text else None
 
     def healthy(self):
-        try:
+        try:  # 1.x has /api/health; 2.x answers /api/info once it serves requests
+            if self.v2:
+                return bool(self.call("GET", "/api/info", timeout=3).get("version"))
             return bool(self.call("GET", "/api/health", timeout=3).get("healthy"))
         except (OSError, ValueError, urllib.error.URLError):
             return False
@@ -127,7 +150,8 @@ class Run:
         if a.env_file:
             self.env.update(read_env_file(a.env_file))
         self.server = None
-        self.api = Api(a.port, a.password)
+        self.v2 = a.major >= 2
+        self.api = Api(a.port, a.password, self.v2)
         self.session = None
         self.prompted_at = 0.0
         self.started = False  # the session became active after the last prompt
@@ -180,9 +204,12 @@ class Run:
             ref["variant"] = self.a.variant
         self.session = self.api.call("POST", "/api/session",
                                      {"model": ref, "location": {"directory": str(self.ws)}})["data"]["id"]
+        if self.v2:  # keep the API keys out of the agent's shell commands
+            shell_env = {k: self.env[k] for k in SHELL_ENV if k in self.env}
+            self.api.call("PUT", f"/api/session/{self.session}/environment", {"variables": shell_env})
 
     def say(self, text, steer=False):
-        body = {"prompt": {"text": text}}
+        body = {"text": text} if self.v2 else {"prompt": {"text": text}}
         if steer:
             body["delivery"] = "steer"
         self.api.call("POST", f"/api/session/{self.session}/prompt", body)
@@ -197,11 +224,21 @@ class Run:
         return not self.started and time.monotonic() - self.prompted_at < STARTUP_S
 
     def reject_questions(self):
-        """Fallback: questions are denied by config, but never let one block the run."""
-        pending = self.api.call("GET", f"/api/session/{self.session}/question").get("data") or []
-        for q in pending:
-            self.api.call("POST", f"/api/session/{self.session}/question/{q['id']}/reject")
-            log(f"rejected a question to the user ({q['id']})")
+        """Fallback: questions and permission prompts are denied by config, but
+        never let one block the run (2.x: forms and permission requests)."""
+        sid = self.session
+        if not self.v2:
+            for q in self.api.call("GET", f"/api/session/{sid}/question").get("data") or []:
+                self.api.call("POST", f"/api/session/{sid}/question/{q['id']}/reject")
+                log(f"rejected a question to the user ({q['id']})")
+            return
+        for f in self.api.call("GET", f"/api/session/{sid}/form").get("data") or []:
+            self.api.call("DELETE", f"/api/session/{sid}/form/{f['id']}?message=" +
+                          urllib.parse.quote("No one can answer: decide on your own."))
+            log(f"cancelled a form for the user ({f['id']})")
+        for r in self.api.call("GET", f"/api/session/{sid}/permission").get("data") or []:
+            self.api.call("POST", f"/api/session/{sid}/permission/{r['id']}/reply", {"decision": "reject"})
+            log(f"rejected a permission request ({r.get('action')} {r.get('resources')})")
 
     def stop(self):
         """Interrupts the session and kills every process of the agent."""
@@ -268,14 +305,26 @@ def snapshot(ws, dest):
 
 
 def opencode_config(a):
-    cfg = {"$schema": "https://opencode.ai/config.json", "autoupdate": False, "share": "disabled"}
+    cfg = {"$schema": "https://opencode.ai/config.json", "share": "disabled"}
+    cfg["update" if a.major >= 2 else "autoupdate"] = "disable" if a.major >= 2 else False
     if a.opencode_config:
         extra = json.loads(Path(a.opencode_config).read_text())
-        extra.pop("permission", None)  # the rules are not negotiable
+        for key in ("permission", "permissions", "tools"):  # the rules are not negotiable
+            extra.pop(key, None)
+        for agent in list((extra.get("agents") or {}).values()) + list((extra.get("agent") or {}).values()):
+            if isinstance(agent, dict):
+                for key in ("permission", "permissions", "tools"):
+                    agent.pop(key, None)
         cfg.update(extra)
-    cfg["permission"] = dict(PERMISSIONS)
+    if a.major >= 2:
+        cfg["permissions"] = list(PERMISSIONS_V2)
+        agents = cfg.setdefault("agents", {})
+        for name in BUILTIN_AGENTS_V2:
+            agents.setdefault(name, {})["permissions"] = PERMISSIONS_V2[1:]
+    else:
+        cfg["permission"] = dict(PERMISSIONS)
     cfg["model"] = a.model
-    cfg["small_model"] = a.model  # never fall back to another provider's model
+    cfg["small_model"] = a.model  # never fall back to another provider's model (2.x: the title agent)
     return cfg
 
 
@@ -339,6 +388,12 @@ def main():
     a = ap.parse_args()
     a.password = a.password or secrets.token_urlsafe(12)
 
+    ver = subprocess.run([a.opencode, "--version"], capture_output=True, text=True)
+    version = ver.stdout.strip().removeprefix("opencode").strip().lstrip("v")
+    if ver.returncode != 0 or not version[:1].isdigit():
+        sys.exit(f"`{a.opencode} --version` failed:\n{ver.stdout[-500:]}{ver.stderr[-2000:]}")
+    a.major = int(version.split(".")[0])
+
     out = Path(a.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     ws, home = prepare(a, out)
@@ -349,10 +404,6 @@ def main():
     run = Run(a, out, ws, home)
     if a.strict:
         check_strict(a, run)
-    ver = run.as_agent([a.opencode, "--version"])
-    version = ver.stdout.strip()
-    if ver.returncode != 0 or not version:
-        sys.exit(f"`opencode --version` failed:\n{ver.stderr[-2000:]}")
 
     run.start_server()
     run.wait_for_model()
