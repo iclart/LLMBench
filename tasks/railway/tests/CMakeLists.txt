@@ -12,6 +12,10 @@ if(MINGW)
 endif()
 
 add_test(NAME railtests COMMAND railtests)
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+add_test(NAME rail_coarse_clock COMMAND ${Python3_EXECUTABLE}
+         ${CMAKE_CURRENT_SOURCE_DIR}/coarse_clock.py --judge $<TARGET_FILE:railjudge>
+         --work ${CMAKE_CURRENT_BINARY_DIR}/coarse_clock)
 
 # ---- engine checks on generated public data
 set(CFG ${CMAKE_CURRENT_SOURCE_DIR}/../configs/public)
@@ -166,6 +170,7 @@ if(RAIL_TSAN)
 endif()
 
 # ---- evaluation orchestrator (Linux only: needs railexec)
+add_test(NAME rail_opencode_credentials COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/opencode_credentials.py)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set(EVAL_SMOKE_ARGS --build ${PROJECT_BINARY_DIR} --work ${DATA}/eval_smoke)
   if(RAIL_HAVE_STRONG)

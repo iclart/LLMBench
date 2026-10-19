@@ -67,7 +67,9 @@ ANTHROPIC_API_KEY=...
 
 然后用 `--model myproxy/my-model --variant high`。OpenCode 1 的写法是 `"variants": {"high": {"reasoningEffort": "high"}}`（对象而不是数组）。
 
-**API 密钥只能用 `--env-file` 传入。**运行器给每次运行单独的 OpenCode 配置目录，所以你用 `opencode auth` / `opencode providers login` 保存的凭据它看不到。常见的环境变量：`ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、`OPENROUTER_API_KEY`、`DEEPSEEK_API_KEY` 等，以 OpenCode 对应提供商的要求为准。
+运行器给每次运行单独的 OpenCode 配置目录。可用 `--env-file` 提供环境变量，或用 `--auth-file <已有 auth.json>` 仅导入本次模型所属提供商的 API key。OpenCode 2 通过原生连接 API 把该 key 加入临时凭据库，结束时删除本次导入的凭据；不会修改用户凭据库。OpenCode 2 的当前登录也可能只保存在 SQLite 中，因此旧 `auth.json` 不一定代表当前登录；此时可改用 `--credential-db <opencode.db>`，只读选择对应 integration 的最新 API key，不复制其他账户或对话。两个凭据选项互斥。不要把密钥写进命令行、报告或聊天。常见环境变量有 `ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、`OPENROUTER_API_KEY`、`DEEPSEEK_API_KEY` 等，以对应提供商的要求为准。认证失败会记录状态并立即结束，不继续消耗试跑时间。
+
+Windows 可用 MinGW POSIX 做本机功能验证与非正式试跑；运行器会选择四个不同物理核，结束时关闭整个子进程树。`--strict` 仍要求 Linux 隔离环境。短时 Windows 试跑不能充当正式赛季的难度关卡，也不与 Linux 历史成绩混榜。OpenCode 2.0.32 已验证模型目录、档位选择和临时凭据连接 API；实际模型调用结果须以每次 `run.json` 为准。
 
 用 OpenCode 2 时，运行器会把 Agent 执行命令的环境换成只含 `PATH`、`HOME` 等少数变量的最小环境，Agent 在 shell 里读不到这些密钥。OpenCode 1 做不到这一点（它的服务模式不支持替换 shell 环境），Agent 理论上可以用 `env` 看到密钥。无论哪个版本，生成报告时都会把 `--env-file` 里的值从页面中抹掉。
 

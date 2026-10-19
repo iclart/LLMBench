@@ -21,6 +21,7 @@
 - `reference/oracle/`：穷举式判定基准，只用于交叉比对 `query`。
 - `configs/public/`：公开负载配置（规模约为隐藏负载的 1/10）。
 - 强参考实现和隐藏配置在私有子模块 `private/`（[iclart/LLMBenchReference](https://github.com/iclart/LLMBenchReference)）中，没有权限时其余部分照常构建。
+- [`v2/README.md`](tasks/railway/v2/README.md)：实验版实时余票、原子改签与部分退票，以及独立模型、Windows 试跑和发布关卡；尚未发布正式赛季。
 
 需要强参考时：`git submodule update --init private`。
 

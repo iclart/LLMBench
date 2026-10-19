@@ -24,6 +24,10 @@
 
 #include "answers.h"
 #include "benchlog.h"
+#include "benchclock.h"
+#ifdef RAIL_PROFILE
+extern "C" void rail_profile_dump();
+#endif
 #include "rng.h"
 #include "ticket_system.h"
 #include "workload.h"
@@ -32,7 +36,7 @@
 namespace {
 
 using namespace railtools;
-using Clock = std::chrono::steady_clock;
+using Clock = railtools::BenchClock;
 
 // Append-only storage that never moves elements and allocates rarely, so
 // logging stays cheap and does not disturb the measurement.
@@ -322,17 +326,30 @@ int run(int argc, char** argv) {
 
   // Release all threads at once, then time until the last one finishes.
   std::atomic<bool> go{false};
+  std::atomic<uint32_t> completed{0};
   std::vector<std::thread> pool;
   for (uint32_t t = 0; t < threads; ++t) {
     pool.emplace_back([&, t] {
       while (!go.load(std::memory_order_acquire)) std::this_thread::yield();
       Player& p = *players[t];
       for (size_t i = t; i < load.intents.size(); i += threads) p.play(static_cast<uint32_t>(i), load.intents[i]);
+#ifdef _WIN32
+      // MinGW emutls may free thread storage before C++ TLS destructors.
+      // Keep measured workers parked until process exit; engine teardown is
+      // outside the task contract. No worker accesses Player after this point.
+      if (completed.fetch_add(1, std::memory_order_release) + 1 == threads) completed.notify_one();
+      Sleep(INFINITE);
+#endif
     });
   }
   sh.t0 = Clock::now();
   go.store(true, std::memory_order_release);
+#ifdef _WIN32
+  for (auto& th : pool) th.detach();
+  for (auto n = completed.load(std::memory_order_acquire); n != threads; n = completed.load(std::memory_order_acquire)) completed.wait(n);
+#else
   for (auto& th : pool) th.join();
+#endif
   const auto main_end = Clock::now();
   out.main_ns = ns_between(sh.t0, main_end);
 
@@ -360,9 +377,16 @@ int run(int argc, char** argv) {
     }
   }
   write_bench_log(pos[3], out);
+#ifdef RAIL_PROFILE
+  rail_profile_dump();
+#endif
   std::fprintf(stderr, "railbench: %u threads, init %.3f s, main %.3f s, quiet %.3f s, audit %.3f s (%zu probes), %zu calls\n",
                threads, double(out.init_ns) / 1e9, double(out.main_ns) / 1e9, double(out.quiet_ns) / 1e9,
                double(out.audit_ns) / 1e9, out.probes.size(), out.events.size());
+#ifdef _WIN32
+  std::fflush(nullptr);
+  ExitProcess(0);
+#endif
   return 0;
 }
 

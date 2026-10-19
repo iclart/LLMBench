@@ -44,13 +44,18 @@ import argparse
 import base64
 import json
 import os
-import pwd
+try:
+    import pwd
+except ImportError:  # local Windows trials; strict isolation remains Linux-only
+    pwd = None
 import secrets
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -69,6 +74,43 @@ STARTUP_S = 120           # a prompt may take this long before the session shows
 MAX_STALLS = 3
 FINAL_NOTICES_MIN = (10, 2)
 NETGUARD_TABLE = "llmbench_guard"
+
+
+def provider_credential(auth_file, credential_db, provider):
+    """Read only the selected provider; never migrate or edit a user's database."""
+    if credential_db:
+        uri = Path(credential_db).resolve().as_uri() + "?mode=ro"
+        connection = sqlite3.connect(uri, uri=True)
+        try:
+            rows = connection.execute(
+                "SELECT value FROM credential WHERE integration_id=? ORDER BY time_updated DESC",
+                (provider,)).fetchall()
+        finally:
+            connection.close()
+        if not rows:
+            raise RuntimeError("credential database has no entry for " + provider)
+        credential = json.loads(rows[0][0])
+    else:
+        credential = json.loads(Path(auth_file).read_text(encoding="utf-8-sig"))[provider]
+    if credential.get("type") not in ("api", "key") or not isinstance(credential.get("key"), str) or not credential["key"]:
+        raise RuntimeError("disposable runs require an API-key credential")
+    return {"type": "api", "key": credential["key"]}
+
+
+def tool_version(executable, directory):
+    """Probe in a disposable home; never touch the user's OpenCode logs/auth."""
+    with tempfile.TemporaryDirectory(prefix="opencode-version-", dir=directory) as home:
+        environment = os.environ.copy()
+        environment.update(HOME=home, USERPROFILE=home,
+                           XDG_CONFIG_HOME=str(Path(home)/"config"), XDG_DATA_HOME=str(Path(home)/"data"),
+                           XDG_CACHE_HOME=str(Path(home)/"cache"), XDG_STATE_HOME=str(Path(home)/"state"))
+        if os.name=="nt":
+            environment.update(APPDATA=str(Path(home)/"AppData/Roaming"),LOCALAPPDATA=str(Path(home)/"AppData/Local"))
+        ver=subprocess.run([executable,"--version"],env=environment,capture_output=True,text=True,timeout=30)
+    version=ver.stdout.strip().removeprefix("opencode").strip().lstrip("v")
+    if ver.returncode or not version[:1].isdigit():
+        raise RuntimeError(f"`{executable} --version` failed:\n{ver.stdout[-500:]}{ver.stderr[-2000:]}")
+    return version
 
 # Tool permissions for the agent (OpenCode 1.x config schema, checked with 1.19.3).
 PERMISSIONS = {
@@ -97,6 +139,8 @@ BUILTIN_AGENTS_V2 = ("build", "plan", "general", "explore")
 # The agent's shell commands see only these variables (2.x can replace the
 # shell environment per session, which keeps API keys out of it).
 SHELL_ENV = ("PATH", "HOME", "LANG", "TERM", "USER", "LOGNAME", "TMPDIR")
+if os.name == "nt":
+    SHELL_ENV += ("SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "USERPROFILE", "APPDATA", "LOCALAPPDATA")
 
 
 def log(msg):
@@ -141,7 +185,7 @@ def notice_marks(minutes, snapshot_every, recommended=None):
 
 def read_env_file(path):
     env = {}
-    for line in Path(path).read_text().splitlines():
+    for line in Path(path).read_text(encoding="utf-8-sig").splitlines():
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
             k, v = line.split("=", 1)
@@ -180,6 +224,15 @@ class Run:
         self.user = pwd.getpwnam(a.user) if a.strict else None
         self.env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(home), "LANG": "C.UTF-8",
                     "TERM": "dumb", "OPENCODE_SERVER_PASSWORD": a.password}
+        self.env.update(XDG_CONFIG_HOME=str(home/".config"),XDG_DATA_HOME=str(home/".local/share"),
+                        XDG_CACHE_HOME=str(home/".cache"),XDG_STATE_HOME=str(home/".local/state"))
+        if os.name == "nt":
+            for key in ("SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP"):
+                if key in os.environ:
+                    self.env[key] = os.environ[key]
+            self.env.update(USERPROFILE=str(home), APPDATA=str(home / "AppData/Roaming"), LOCALAPPDATA=str(home / "AppData/Local"))
+        self.job = None
+        self.imported_credentials = []
         if a.env_file:
             self.env.update(read_env_file(a.env_file))
         self.server = None
@@ -197,20 +250,38 @@ class Run:
             os.setuid(self.user.pw_uid)
 
     def as_agent(self, argv, **kw):
-        return subprocess.run(argv, env=self.env, cwd=self.ws, preexec_fn=self._preexec, capture_output=True,
+        options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"preexec_fn": self._preexec}
+        return subprocess.run(argv, env=self.env, cwd=self.ws, **options, capture_output=True,
                               text=True, **kw)
 
     def start_server(self):
+        options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"preexec_fn": self._preexec}
         self.server = subprocess.Popen(
             [self.a.opencode, "serve", "--port", str(self.a.port), "--hostname", self.a.hostname],
-            env=self.env, cwd=self.ws, preexec_fn=self._preexec, stdin=subprocess.DEVNULL,
+            env=self.env, cwd=self.ws, **options, stdin=subprocess.DEVNULL,
             stdout=open(self.out / "logs/server.log", "ab"), stderr=subprocess.STDOUT)
+        if os.name == "nt":
+            from process_control import WindowsJob
+            self.job = WindowsJob(); self.job.attach(self.server)
         for _ in range(120):
             if self.api.healthy():
+                if (self.a.auth_file or self.a.credential_db) and self.v2:
+                    provider=self.a.model.partition("/")[0]
+                    credential=provider_credential(self.a.auth_file, self.a.credential_db, provider)
+                    # V2 stores accounts in SQLite. Use its public connection
+                    # API rather than depending on a legacy-file migration.
+                    integrations=self.api.call("GET","/api/integration")["data"]
+                    matches=[i["id"] for i in integrations if i["id"]==provider or any(i["id"].endswith(separator+provider) for separator in ("_",":","/"))]
+                    if len(matches)!=1:
+                        self.stop();raise RuntimeError("cannot identify integration for "+provider)
+                    previous={c["id"] for c in self.api.call("GET","/api/credential")["data"]}
+                    self.api.call("POST",f"/api/integration/{urllib.parse.quote(matches[0],safe='')}/connect/key",{"key":credential["key"],"label":"LLMBench disposable run"})
+                    self.imported_credentials=[c["id"] for c in self.api.call("GET","/api/credential")["data"] if c["id"] not in previous]
                 return
             if self.server.poll() is not None:
                 break
             time.sleep(0.5)
+        self.stop()
         sys.exit(f"opencode serve did not come up; see {self.out / 'logs/server.log'}")
 
     def server_alive(self):
@@ -230,7 +301,8 @@ class Run:
             except (OSError, ValueError, urllib.error.URLError):
                 pass
             time.sleep(1)
-        log(f"warning: OpenCode does not list {self.a.model}; check the name with `opencode models`")
+        self.stop()
+        sys.exit(f"OpenCode does not list {self.a.model}; see the server log. No model substitution was made.")
 
     def check_variant(self, info):
         """An unknown variant only fails at the first prompt, so check it up front."""
@@ -269,6 +341,15 @@ class Run:
         # Right after a prompt the session takes a moment to show as active.
         return not self.started and time.monotonic() - self.prompted_at < STARTUP_S
 
+    def fatal_provider_error(self):
+        if not self.v2:return None
+        page=self.api.call("GET",f"/api/session/{self.session}/message?limit=20&order=desc")
+        for message in page.get("data") or []:
+            error=message.get("error") or {}
+            if error.get("type")=="provider.auth" or error.get("status") in (401,402,403):
+                return {"type":error.get("type"),"status":error.get("status"),"message":error.get("message")}
+        return None
+
     def reject_questions(self):
         """Fallback: questions and permission prompts are denied by config, but
         never let one block the run (2.x: forms and permission requests)."""
@@ -293,7 +374,18 @@ class Run:
                 self.api.call("POST", f"/api/session/{self.session}/interrupt", timeout=10)
             except (OSError, urllib.error.URLError):
                 pass
-        if self.server is not None:
+        if self.server_alive():
+            for credential in self.imported_credentials:
+                try:self.api.call("DELETE",f"/api/credential/{credential}",timeout=3)
+                except (OSError,ValueError,urllib.error.URLError):pass
+            self.imported_credentials=[]
+        if self.server is not None and os.name == "nt":
+            if self.job:
+                self.job.terminate(); self.job.close(); self.job = None
+            if self.server.poll() is None:
+                self.server.kill()
+            self.server.wait(timeout=10)
+        elif self.server is not None:
             for sig in (signal.SIGTERM, signal.SIGKILL):
                 try:
                     os.killpg(self.server.pid, sig)
@@ -307,6 +399,8 @@ class Run:
         if self.user:  # anything the account still runs, e.g. a daemonised build
             subprocess.run(["pkill", "-KILL", "-u", str(self.user.pw_uid)], capture_output=True)
             time.sleep(1)
+        if self.a.auth_file or self.a.credential_db:
+            (self.home/".local/share/opencode/auth.json").unlink(missing_ok=True)
 
     def usage(self):
         """Sums tokens and cost over the session's assistant messages."""
@@ -321,9 +415,9 @@ class Run:
             cursor = (page.get("cursor") or {}).get("next")
             if not cursor or not page.get("data"):
                 break
-        (self.out / "logs/messages.json").write_text(json.dumps(messages, ensure_ascii=False, indent=1))
+        (self.out / "logs/messages.json").write_text(json.dumps(messages, ensure_ascii=False, indent=1),encoding="utf-8")
         (self.out / "logs/transcript.json").write_text(
-            json.dumps(transcript.from_opencode(messages), ensure_ascii=False, indent=1))
+            json.dumps(transcript.from_opencode(messages), ensure_ascii=False, indent=1),encoding="utf-8")
         for m in messages:
             if m.get("type") != "assistant":
                 continue
@@ -393,6 +487,13 @@ def prepare(a, out):
     home = out / "home"
     cfg = home / ".config/opencode/opencode.json"
     cfg.write_text(json.dumps(opencode_config(a), indent=2))
+    if a.auth_file or a.credential_db:
+        provider=a.model.partition("/")[0]
+        credential=provider_credential(a.auth_file, a.credential_db, provider)
+        if a.major<2:
+            auth=home/".local/share/opencode/auth.json"
+            auth.parent.mkdir(parents=True,exist_ok=True)
+            auth.write_text(json.dumps({provider:credential}));auth.chmod(0o600)
     web = out / "web.txt"
     web.write_text(f"url: http://<this machine>:{a.port}/\nuser: opencode\npassword: {a.password}\n")
     web.chmod(0o600)
@@ -427,6 +528,9 @@ def main():
                     help="minute of the 'recommended time reached' notice; 0 disables it")
     ap.add_argument("--snapshot-every", type=float, default=taskinfo.SNAPSHOT_EVERY_MINUTES)
     ap.add_argument("--env-file", help="KEY=VALUE lines, e.g. the provider API key")
+    auth_group=ap.add_mutually_exclusive_group()
+    auth_group.add_argument("--auth-file",help="existing OpenCode auth.json; import only the requested provider")
+    auth_group.add_argument("--credential-db",help="read-only OpenCode 2 SQLite source; import only the requested provider")
     ap.add_argument("--opencode-config", help="JSON merged into the run's opencode config, e.g. a custom provider")
     ap.add_argument("--opencode", default=shutil.which("opencode") or "opencode")
     ap.add_argument("--port", type=int, default=4096)
@@ -436,6 +540,8 @@ def main():
     ap.add_argument("--strict", action="store_true", help="official mode: dedicated account + network guard")
     ap.add_argument("--user", default="llmagent", help="the dedicated account for --strict")
     a = ap.parse_args()
+    if a.strict and os.name == "nt":
+        sys.exit("--strict requires Linux; Windows runs are explicitly local trials")
     a.password = a.password or secrets.token_urlsafe(12)
     if "#" in a.model:  # OpenCode 2 style: provider/model#variant
         a.model, _, variant = a.model.partition("#")
@@ -443,10 +549,8 @@ def main():
             sys.exit(f"conflicting variants: #{variant} in --model and --variant {a.variant}")
         a.variant = variant
 
-    ver = subprocess.run([a.opencode, "--version"], capture_output=True, text=True)
-    version = ver.stdout.strip().removeprefix("opencode").strip().lstrip("v")
-    if ver.returncode != 0 or not version[:1].isdigit():
-        sys.exit(f"`{a.opencode} --version` failed:\n{ver.stdout[-500:]}{ver.stderr[-2000:]}")
+    Path(a.out).resolve().parent.mkdir(parents=True,exist_ok=True)
+    version = tool_version(a.opencode,Path(a.out).resolve().parent)
     a.major = int(version.split(".")[0])
 
     out = Path(a.out).resolve()
@@ -456,6 +560,11 @@ def main():
         workspace_version = json.loads((ws / taskinfo.VERSION_FILE).read_text())
     except (OSError, ValueError):
         workspace_version = {}
+    trial_cpus=None
+    if workspace_version.get("abi_version")==2:
+        sys.path.insert(0,str(HERE.parent/"eval"))
+        from compare_reference import pin_four_cores
+        trial_cpus=pin_four_cores()
     run = Run(a, out, ws, home)
     if a.strict:
         check_strict(a, run)
@@ -473,7 +582,8 @@ def main():
     log(f"opencode {version}, model {a.model}, {'strict' if a.strict else 'trial'} mode, {a.minutes:g} min")
     log(f"live view: http://<this machine>:{a.port}/  user opencode  password {a.password}  (also in {out / 'web.txt'})")
     log(f"session {run.session}; forced submission at {clock(end_wall)}")
-    prompt = (HERE / "PROMPT.md").read_text()
+    prompt_path = ws / "PROMPT.md" if workspace_version.get("abi_version") == 2 else HERE / "PROMPT.md"
+    prompt = prompt_path.read_text(encoding="utf-8")
     events = []
 
     def event(kind, **kw):
@@ -482,6 +592,7 @@ def main():
     run.say(start_message(prompt, start, end_wall, a.minutes, a.recommended))
 
     resumes, stalls, end_reason = 0, 0, None
+    provider_error = None
     idle_since, last_resume = None, time.monotonic()
     while True:
         time.sleep(POLL_S)
@@ -509,7 +620,12 @@ def main():
                 event("notice", left_min=left)
                 log(f"time notice: {left} min left")
             run.reject_questions()
-            if run.active():
+            active=run.active()
+            if not active or not run.started:
+                provider_error=run.fatal_provider_error()
+                if provider_error:
+                    end_reason="provider_unavailable";break
+            if active:
                 idle_since = None
                 continue
             idle_since = idle_since or now
@@ -544,15 +660,18 @@ def main():
 
     result = {
         "tool": "opencode", "tool_version": version, "api": "v2", "model": a.model, "variant": a.variant,
+        "abi_version": workspace_version.get("abi_version", 1), "platform": os.name,
+        "cpus":trial_cpus,
         "mode": "strict" if a.strict else "trial", "minutes": a.minutes, "recommended": a.recommended,
         "start": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start)), "start_epoch": start,
         "task_version": workspace_version.get("task_version"), "public_seed": workspace_version.get("public_seed"),
         "prompt_sha": taskinfo.prompt_sha(prompt), "machine": taskinfo.machine_info(), "events": events,
         "elapsed_min": round(elapsed / 60, 2), "end_reason": end_reason, "submitted": end_reason == "submitted",
         "resumes": resumes, "session": run.session, "usage": usage,
+        "provider_error":provider_error,
         "snapshots": sorted(p.name for p in (out / "snapshots").iterdir()),
     }
-    (out / "run.json").write_text(json.dumps(result, indent=2, ensure_ascii=False))
+    (out / "run.json").write_text(json.dumps(result, indent=2, ensure_ascii=False),encoding="utf-8")
     log(json.dumps({k: result[k] for k in ("end_reason", "elapsed_min", "resumes", "usage")}, ensure_ascii=False))
     sys.exit(0 if end_reason in ("submitted", "deadline") else 1)
 

@@ -423,7 +423,9 @@ class Judge {
               if (!(h.mask & so.legs[j].mask)) continue;
               const Order& o = orders_[h.order];
               // The hold may have been live at some moment of [start, end].
-              if (o.book_start < so.end && o.refund_end > so.start) {
+              // Equal timestamps can hide distinct operations on a coarse
+              // clock. Include the endpoints, as in the oversell check.
+              if (o.book_start <= so.end && o.refund_end >= so.start) {
                 maybe_taken = true;
                 break;
               }
