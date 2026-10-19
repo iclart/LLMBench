@@ -14,9 +14,9 @@ against this season, with the task version and prompt the season was
 prepared with. Other runs get pages and appear in their own sections.
 
 --names maps model IDs to display names ({"anthropic/claude-x": "Claude X"}).
---env-file: every value in these KEY=VALUE files is replaced by *** wherever
-it appears in a page, as are the runs' web UI passwords and strings shaped
-like common API keys. Transcripts keep the first and last lines of each tool
+--env-file: every value of 6 or more characters in these KEY=VALUE files is
+replaced by *** wherever it appears in a page, as are the runs' web UI
+passwords and strings shaped like common API keys. Transcripts keep the first and last lines of each tool
 output unless --full-transcript.
 """
 import argparse

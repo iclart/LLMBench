@@ -531,7 +531,7 @@
       { label: "性能", num: true, sort: (g) => g.perf }, { label: "功能", num: true, sort: (g) => g.functional },
       { label: "周转量", num: true, sort: (g) => g.transport }, { label: "偏好", num: true, sort: (g) => g.pref },
       { label: "内存", num: true, sort: (g) => g.memory },
-      { label: "通过率", num: true, sort: (g) => g.pass_rate, title: "9 组测量中没有失败（超时、判错、门槛）的比例" },
+      { label: "通过率", num: true, sort: (g) => g.pass_rate, title: "9 组测量中没有失败（判错、崩溃、超内存、致命错误、满足率门槛）的比例；超时不算失败" },
       { label: "平均用时", num: true, sort: (g) => g.elapsed }, { label: "结束方式" },
       { label: "平均费用", num: true, sort: (g) => g.cost }, { label: "分 / 美元", num: true, sort: (g) => g.per_usd },
       { label: "平均 token", num: true, sort: (g) => g.tokens }, { label: "工具版本" }],
@@ -558,7 +558,7 @@
             (failed ? "✗ " : "") + fmt(g.heat[k], 0));
         })))));
     app.append(section("heat", "分项得分", card(el("div", { class: "scroll-x" }, heat),
-      note("每格是该组测量的平均性能分（0 = 基线，100 = 强参考，比基线慢为负，最低 −100）。✗ 表示至少一次运行在该组记了最低分（超时、判错、崩溃、超内存、致命错误，或订票满足率低于强参考的 85%）。颜色越深分数越高，100 以上同色。"))));
+      note("每格是该组测量的平均性能分（0 = 基线，100 = 强参考，比基线慢为负，最低 −100）。✗ 表示至少一次运行在该组被清零（判错、崩溃、超内存、致命错误，或订票满足率低于强参考的 85%）；超时也记 −100，但不标 ✗。颜色越深分数越高，100 以上同色。"))));
 
     const pts = groups.filter((g) => g.cost > 0).map((g) => ({ x: g.cost, y: g.mean, label: g.label, slot: g.slot, per: g.per_usd }));
     app.append(section("cost", "分数与费用", card(pts.length ? scatter(pts) : note("没有费用数据（OpenCode 自定义提供商未配置价格，或人工模式未填写费用）。"),
@@ -605,7 +605,7 @@
     app.append(el("nav", { class: "toc" }, toc.map(([id, t]) => el("a", { href: "#" + id }, t))));
 
     const banners = [];
-    if (F?.fatal) banners.push(el("div", { class: "banner crit" }, el("strong", {}, "总分 0："), FATAL[F.fatal] || F.fatal));
+    if (F?.fatal) banners.push(el("div", { class: "banner crit" }, el("strong", {}, "致命错误，总分 −65："), FATAL[F.fatal] || F.fatal));
     if (F?.needs_review) banners.push(el("div", { class: "banner warn" }, el("strong", {}, "需要人工复核："), "静态扫描发现可疑用法，见“正确性”一节。"));
     if (R.category === "nonstandard") banners.push(el("div", { class: "banner info" }, el("strong", {}, "非标准运行，不参与排名："), R.reasons.join("；")));
     if (R.category === "unscored") banners.push(el("div", { class: "banner info" }, el("strong", {}, "还没有评分结果。"), "用 railway_eval.py snapshots 评分后重新生成报告。"));

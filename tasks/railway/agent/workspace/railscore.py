@@ -63,7 +63,8 @@ def functional():
 
 
 def run_bench(sc, t, timeout):
-    """Runs and judges one measurement. Returns (metrics or None, message)."""
+    """Runs and judges one measurement. Returns (metrics or None, message);
+    a timeout returns {"status": "timeout"}, which fails only this measurement."""
     log = WS / f"build/score_{sc}_t{t}.log"
     verdict_path = WS / f"build/score_{sc}_t{t}.json"
     argv = [WS / "build/railbench", WS / "data/world.world", WS / f"data/{sc}.load", str(t), log]
@@ -71,7 +72,7 @@ def run_bench(sc, t, timeout):
     code, rss, err = run_measured(argv, timeout)
     wall = time.monotonic() - start
     if code is None:
-        return None, f"timed out after {timeout:.0f} s"
+        return {"status": "timeout"}, f"timed out after {timeout:.0f} s"
     if code != 0:
         return None, f"railbench failed (exit {code}): {err}"
     j = subprocess.run([str(WS / "bin/railjudge"), str(WS / "data/world.world"), str(WS / f"data/{sc}.load"),
@@ -102,7 +103,8 @@ def main():
         if c["passed"] < c["total"]:
             print(f"   {cat}: {c['passed']}/{c['total']} passed, e.g. {c['failures'][0].splitlines()[0]}")
     print(f"   functional {scoring.functional_score(func):.1f}", flush=True)
-    measurements, failed = {}, []
+    measurements, failed, timed_out = {}, [], []
+    res_threads = 1 if 1 in threads else min(threads)  # the run the gate and quality scores come from
     for sc in scoring.SCENARIOS:
         for t in threads:
             key = f"{sc}/t{t}"
@@ -114,6 +116,13 @@ def main():
                 failed.append(sc)
                 break
             measurements[key] = m
+            if m["status"] == "timeout":
+                # As in the official evaluation, the remaining thread counts still run.
+                print(f"   TIMED OUT after {timeout:.0f} s: performance {scoring.PERF_FLOOR:.0f} "
+                      + ("in the whole scenario, since the satisfaction gate needs this run" if t == res_threads
+                         else "here; the other thread counts are still scored"), flush=True)
+                timed_out.append(key)
+                continue
             b, s = anchors["baseline"][key], anchors["strong"][key]
             print(f"   {m['throughput']:10.0f} calls/s (baseline {b['throughput']:.0f}, strong {s['throughput']:.0f}); "
                   f"p99 query {m['query_p99_ns'] / 1e3:.1f} us, book {m['book_p99_ns'] / 1e3:.1f} us; "
@@ -129,7 +138,8 @@ def main():
         if sc in failed:
             print(f"  {sc:16} FAILED: performance {scoring.PERF_FLOOR:.0f} in every measurement")
         elif g is None:
-            print(f"  {sc:16} not measured")
+            print(f"  {sc:16} the {res['quality_threads']}-thread run timed out, so the satisfaction gate "
+                  f"cannot be checked: performance {scoring.PERF_FLOOR:.0f}, the rest 0")
         else:
             q = measurements[f"{sc}/t{res['quality_threads']}"]["quality"]
             state = "ok" if g["passed"] else f"BELOW {100 * scoring.SATISFACTION_GATE:.0f}%: performance {scoring.PERF_FLOOR:.0f}, the rest 0"
@@ -148,7 +158,7 @@ def main():
     print(f"  preference  {res['preference']:6.1f} x {scoring.PREF_WEIGHT:.2f}")
     print(f"  memory      {res['memory']:6.1f} x {scoring.MEMORY_WEIGHT:.2f}")
     print(f"  estimated total {res['total']:.1f}")
-    return 1 if failed else 0
+    return 1 if failed or timed_out else 0
 
 
 if __name__ == "__main__":
