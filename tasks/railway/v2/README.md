@@ -27,7 +27,7 @@ python tasks/railway/v2/package_workspace.py --season <public-season> --build <b
 python tasks/railway/v2/pilots.py --workspace <workspace> --out <pilot-preflight>
 ```
 
-隐藏赛季使用 `prepare --world <private-world>`。评测选手使用 `evaluate --src <src-dir>`；评分使用 `evaluate score --measured <result.json> --baseline <result.json> --strong <result.json> --out <score.json>`。锚点必须具有相同输入哈希、任务指纹、平台、编译参数及核心配置，ABI 1 锚点会被拒绝。每接口不足一万次测量时性能分缺失，不能用零样本生成满分。内存先测相同负载的空引擎开销，再从峰值中扣除；Windows Job Object 限制提交内存并在超时杀掉进程树。Windows 为本地试跑，当前 Linux runner 不是正式隔离沙箱。
+隐藏赛季使用 `prepare --world <private-world>`。评测选手使用 `evaluate --src <src-dir>`；评分使用 `evaluate score --measured <result.json> --baseline <result.json> --strong <result.json> --out <score.json>`。锚点必须具有相同输入哈希、任务指纹、平台、编译参数及核心配置，ABI 1 锚点会被拒绝。每接口不足一万次测量时性能分缺失，不能用零样本生成满分。内存先测相同负载的空引擎开销，再从峰值中扣除；Windows Job Object 限制提交内存并在超时杀掉进程树；Linux 由 `railexec` 报告被测程序自身的峰值内存。`evaluate` 先在安静的机器上顺序完成全部测量，再用 `--jobs` 个进程（默认 CPU 数）并行裁判；某组第一次失败之后的重复不计入。Windows 为本地试跑，当前 Linux runner 不是正式隔离沙箱。
 
 公开包按白名单复制头文件、空实现、负载、编译好的测试/驱动静态库及 Python 字节码。顺序裁判字节码可被选手分析，不承载秘密；私有引擎和隐藏参数不得进入包。Python 主次版本必须匹配。包内 `make check/bench/score/time/submit` 可用；实验版 `score` 保留正式总分为空。
 

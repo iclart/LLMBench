@@ -274,6 +274,33 @@ def linearize(initial, events):
     """Exact bounded search, respecting real-time precedence. At most eight calls."""
     if len(events) > 8:
         raise ValueError("exact histories are limited to eight calls")
+    # Only orders and seats these calls can change differ between the states
+    # of this search; the rest is the same in all of them and is left out of
+    # the visited-state key.
+    touched_orders, touched = set(), set()
+    def resources(b):
+        try:
+            return {(r[0], r[1], b["class"]) for r in initial.validate_book(b) or ()}
+        except (KeyError, TypeError, IndexError, ValueError):
+            return set()
+    booked = {}
+    for event in events:
+        request = event["request"]
+        if event["op"] in ("B", "E") and isinstance(request, dict):
+            b = request if event["op"] == "B" else request.get("replacement")
+            touched_orders.add(event.get("order"))
+            booked[event.get("order")] = resources(b)
+            touched |= booked[event.get("order")]
+    for event in events:
+        request = event["request"]
+        if event["op"] in ("R", "E") and isinstance(request, dict):
+            oid = request.get("order")
+            touched_orders.add(oid)
+            old = initial.orders.get(oid)
+            if old is not None:
+                touched |= resources(old["request"])
+            touched |= booked.get(oid, set())
+    touched_keys = [(t, d, c, seat) for t, d, c in sorted(touched) for seat in range(COUNTS[c])]
     predecessors = [sum(1 << j for j, other in enumerate(events)
                         if j != i and (other["end"] < event["start"] or
                            ("thread" in event and other.get("thread")==event["thread"] and other["index"]<event["index"])))
@@ -287,8 +314,8 @@ def linearize(initial, events):
         if done == (1 << len(events)) - 1:
             return model
         # Actual seat holds plus order cell states identify the sequential state.
-        state = (done, tuple(sorted((oid, order["active"]) for oid, order in model.orders.items())),
-                 tuple(sorted((key, tuple(sorted(value))) for key, value in model.holds.items() if value)))
+        state = (done, tuple(sorted((oid, model.orders[oid]["active"]) for oid in touched_orders if oid in model.orders)),
+                 tuple((key, tuple(sorted(value))) for key in touched_keys for value in [model.holds.get(key)] if value))
         if state in visited:
             return None
         visited.add(state)

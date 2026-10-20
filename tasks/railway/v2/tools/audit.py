@@ -10,7 +10,7 @@ def audit(initial, events):
     errors = []
     all_orders = initial.orders.copy()
     # oid -> (create event or None for a pre-existing order)
-    created = {oid: None for oid in all_orders}
+    created = dict.fromkeys(all_orders)
     removed = {}
     def fail(kind, event):
         errors.append({"kind": kind, "event": event["index"]})
@@ -97,10 +97,18 @@ def audit(initial, events):
                              for p in range(5) for l in range(3) if mask & 1 << (p * 3 + l))
         if definitely_created and not can_be_missing:
             fail("false_not_found", e)
+    # Holds of orders that existed before this component and are not
+    # released in it are live throughout: they are initial.holds, read in
+    # place. Only the other ("dynamic") holds get lifetimes, so the cost
+    # follows the component, not the whole history.
+    dying = {key for key in removed if created[key[0]] is None}
     lifetimes = []
     by_seat = {}
     by_resource = {}
-    for oid, order in all_orders.items():
+    dynamic = [oid for oid in dict.fromkeys(key[0] for key in removed) if created[oid] is None]
+    dynamic += [e["order"] for e in events if e["op"] in ("B", "E") and created.get(e.get("order", 0)) is e]
+    for oid in dynamic:
+        order = all_orders[oid]
         creator = created[oid]
         for p in range(order["request"]["pax"]):
             for l, r in enumerate(order["resolved"]):
@@ -108,6 +116,8 @@ def audit(initial, events):
                 if not order["active"] & bit:
                     continue
                 death = removed.get((oid, p, l))
+                if creator is None and death is None:
+                    continue  # static: read from initial.holds
                 entry = {"key": (r[0], r[1], order["request"]["class"], order["seats"][l][p]),
                          "hold": (r[2], r[3], oid, p, l), "creator": creator, "death": death,
                          "possible_start": creator["start"] if creator else -1,
@@ -116,9 +126,12 @@ def audit(initial, events):
                          "certain_end": death["start"] if death else float("inf")}
                 lifetimes.append(entry); by_seat.setdefault(entry["key"], []).append(entry)
                 by_resource.setdefault(entry["key"][:3], []).append(entry)
-    for holds in by_seat.values():
+    for key, holds in by_seat.items():
         # Only overlapping stop ranges and guaranteed live-time intervals
         # prove an oversell. Atomic exchanges may touch at a single point.
+        # Static holds of the seat take part as live throughout.
+        holds = [{"hold": h, "certain_start": -1, "certain_end": float("inf")}
+                 for h in initial.holds.get(key, ()) if h[2:] not in dying] + holds
         active=[]
         for a in sorted(holds,key=lambda h:h["certain_start"]):
             if a["certain_start"]>=a["certain_end"]:continue
@@ -129,8 +142,23 @@ def audit(initial, events):
                 if max(a["certain_start"], b["certain_start"]) < min(a["certain_end"], b["certain_end"]):
                     errors.append({"kind": "oversell", "orders": [a["hold"][2], b["hold"][2]]})
             active.append(a)
+    class Holds:
+        """initial.holds without `skip`, plus `extra`; read-only (get only)."""
+        def __init__(self, extra, skip):
+            self.extra, self.skip = extra, skip
+        def get(self, key, default=()):
+            base = initial.holds.get(key, ())
+            if self.skip and base:
+                base = [h for h in base if h[2:] not in self.skip]
+            more = self.extra.get(key)
+            if more:
+                return [*base, *more]
+            return base or default
     def envelope(event, worst, ignore=frozenset(), resources=None):
+        # Static holds are in every envelope. A restricted envelope is only
+        # read on keys of `resources`.
         result = initial.empty_inventory()
+        extra = {}
         candidates = lifetimes if resources is None else (h for key in resources for h in by_resource.get(key, ()))
         for h in candidates:
             if h["hold"][2:] in ignore:
@@ -138,7 +166,8 @@ def audit(initial, events):
             included = (h["possible_start"] <= event["end"] and h["possible_end"] >= event["start"]) if worst else (
                 h["certain_start"] < event["start"] and h["certain_end"] > event["end"])
             if included:
-                result.holds.setdefault(h["key"], []).append(h["hold"])
+                extra.setdefault(h["key"], []).append(h["hold"])
+        result.holds = Holds(extra, dying | set(ignore))
         return result
     # Full SoldOut checks are inexpensive relative to full route enumeration.
     for e in events:
@@ -196,6 +225,10 @@ def audit(initial, events):
                     fail("query_definite_omission", e)
     final = initial.empty_inventory()
     final.orders = all_orders
+    final.holds = initial.holds.copy()
+    for key in {(*all_orders[oid]["resolved"][l][:2], all_orders[oid]["request"]["class"], all_orders[oid]["seats"][l][p])
+                for oid, p, l in dying}:
+        final.holds[key] = [h for h in final.holds[key] if h[2:] not in dying]
     changed=set()
     for key in removed:
         oid, p, l = key
@@ -203,6 +236,7 @@ def audit(initial, events):
             final.orders[oid]=final.orders[oid].copy();changed.add(oid)
         final.orders[oid]["active"] &= ~(1 << (p * 3 + l))
     for h in lifetimes:
-        if h["death"] is None:
-            final.holds.setdefault(h["key"], []).append(h["hold"])
-    return final, errors, {"query_envelope_samples": len(selected), "lifetimes": len(lifetimes)}
+        if h["death"] is None:  # hold lists are shared with `initial`: replace, never append
+            final.holds[h["key"]] = [*final.holds.get(h["key"], ()), h["hold"]]
+    live_before = sum(map(len, initial.holds.values()))  # static holds count as lifetimes too
+    return final, errors, {"query_envelope_samples": len(selected), "lifetimes": live_before - len(dying) + len(lifetimes)}

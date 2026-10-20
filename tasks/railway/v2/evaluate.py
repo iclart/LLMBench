@@ -5,6 +5,7 @@ Windows jobs cap commit memory and terminate child trees. Windows runs are
 local trials, not the Linux isolation/TSan validation required for release.
 """
 import argparse
+import concurrent.futures
 import ctypes
 import hashlib
 import json
@@ -146,6 +147,29 @@ def prepare(a):
     print(json.dumps(result, indent=2))
 
 
+_judge_world = None
+
+
+def _judge_init(world_path):
+    global _judge_world
+    _judge_world = load_world(world_path)
+
+
+def _judge_trace(job):
+    """Judges one measured run (in a worker process)."""
+    trace, process = job
+    if process["exit"] or process["timed_out"]:
+        return {"ok": False, "errors": ["process failed"], "process": process}
+    try:
+        with trace.open() as source:
+            header = json.loads(next(source)); events = [json.loads(line) for line in source]
+        verdict = check(_judge_world, header, events)
+    except (ValueError,KeyError,TypeError,IndexError,StopIteration) as error:
+        verdict={"ok":False,"errors":[{"kind":"invalid_log","detail":str(error)}]}
+    verdict["process"] = process
+    return verdict
+
+
 def evaluate(a):
     manifest = validate_season(a.season)
     a.out.mkdir(parents=True, exist_ok=False)
@@ -176,7 +200,6 @@ def evaluate(a):
     else:
         executable = a.build / "v2" / ("railv2_run_" + a.engine + SUFFIX)
         checks_exe = a.build / "v2" / ("railv2_tests_" + a.engine + SUFFIX)
-    world = load_world(a.season / "world.world")
     result = {"schema_version": 2, "abi_version": 2, "task_version": manifest["task_version"],
               "platform": platform.platform(), "binary_sha256": sha(executable), "measurements": {},
               "status": "experimental", "published": False, "total": None}
@@ -196,29 +219,30 @@ def evaluate(a):
         functional["categories"][case]={"passed":int(passed),"total":1,"process":process}
         functional["crashes"]+=int(process["exit"] not in (0,1) or process["timed_out"])
     result["functional"]=functional
+    # Measure everything first, on a quiet machine, then judge the logs in
+    # parallel. A group keeps its repeats up to the first failed one, as if
+    # measuring had stopped there.
+    runs = []
     for scenario in SCENARIOS:
         for threads in (1, 4, 16):
-            raw = []
             for repeat in range(a.repeats):
                 name = f"{scenario}.t{threads}.{repeat}"
                 trace = a.out / (name + ".jsonl")
                 process = run_process([executable, a.season / "world.world", a.season / (scenario + ".load"), threads, trace],
                                       a.out, a.timeout, int((1536 + (calibration["harness_mb"][f"{scenario}/t{threads}"] if calibration else a.harness_mb)) * 2**20))
-                if process["exit"] or process["timed_out"]:
-                    verdict = {"ok": False, "errors": ["process failed"], "process": process}
-                else:
-                    try:
-                        with trace.open() as source:
-                            header = json.loads(next(source)); events = [json.loads(line) for line in source]
-                        verdict = check(world, header, events)
-                    except (ValueError,KeyError,TypeError,IndexError,StopIteration) as error:
-                        verdict={"ok":False,"errors":[{"kind":"invalid_log","detail":str(error)}]}
-                    verdict["process"] = process
+                runs.append((scenario, threads, name, trace, process))
+                print(name, "measured", "failed" if process["exit"] or process["timed_out"] else "", flush=True)
+    with concurrent.futures.ProcessPoolExecutor(max_workers=a.jobs, initializer=_judge_init, initargs=(a.season / "world.world",)) as pool:
+        verdicts = list(pool.map(_judge_trace, [(trace, process) for *_, trace, process in runs]))
+    for scenario in SCENARIOS:
+        for threads in (1, 4, 16):
+            raw = []
+            for (sc, th, name, trace, process), verdict in zip(runs, verdicts):
+                if (sc, th) != (scenario, threads) or (raw and not raw[-1]["ok"]):
+                    continue
                 (a.out / (name + ".json")).write_text(json.dumps(verdict, indent=2))
                 raw.append(verdict)
                 print(name, "ok" if verdict["ok"] else verdict["errors"], flush=True)
-                if not verdict["ok"]:
-                    break
             key = f"{scenario}/t{threads}"
             if all(r["ok"] for r in raw):
                 result["measurements"][key] = {
@@ -284,6 +308,7 @@ def main():
     source.add_argument("--engine", choices=("baseline", "strong", "stub"))
     ev.add_argument("--cxx", default="g++")
     ev.add_argument("--repeats", type=int, default=5)
+    ev.add_argument("--jobs", type=int, default=os.cpu_count() or 1, help="parallel judges, after all measurements")
     ev.add_argument("--timeout", type=float, default=600)
     ev.add_argument("--harness-mb", type=float, default=0, help="measured stub footprint; do not guess for scored runs")
     ev.add_argument("--calibration",type=Path,help="same-season calibrate/calibration.json")
@@ -311,7 +336,7 @@ def main():
         read=lambda p:json.loads(p.read_text()) if p else None
         a.out.write_text(json.dumps(scoring.score(read(a.measured),read(a.baseline),read(a.strong),read(a.management),read(a.checks)),indent=2))
     else:
-        if a.repeats < 1 or a.timeout <= 0 or a.harness_mb < 0:
+        if a.repeats < 1 or a.timeout <= 0 or a.harness_mb < 0 or a.jobs < 1:
             parser.error("invalid measurement limits")
         evaluate(a)
 
