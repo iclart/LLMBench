@@ -133,8 +133,13 @@ class Model:
             for i in range(j):
                 ending[self.world["trains"][t][i][0]].append((t, i))
         rank = lambda path: (len(path), path[-1][5], -path[0][4], tuple(x for leg in path for x in leg[:2]))
+        # The worst kept arrival once k itineraries are kept; recomputed only
+        # when `found` changes (it is read at every step of the search).
+        limit = [float("inf")]
         def bound():
-            return max(found.values(), key=rank)[-1][5] if len(found) >= k else float("inf")
+            return limit[0]
+        def update_bound():
+            limit[0] = max(found.values(), key=rank)[-1][5] if len(found) >= k else float("inf")
 
         def visit(path, station, ready, transfers):
             remaining=length-len(path)
@@ -164,6 +169,7 @@ class Model:
                             if len(found) > k:
                                 worst = max(found, key=lambda key: rank(found[key]))
                                 del found[worst]
+                            update_bound()
                         elif len(next_path) < length:
                             visit(next_path, at, leg[5] + 30, transfers | {at})
         for length in range(1, 4):

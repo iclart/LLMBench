@@ -59,25 +59,54 @@ def validate_season(season):
     return manifest
 
 
+RAILEXEC = None  # Linux: build/tasks/railway/railexec, set by main()
+
+
 def run_process(command, directory, timeout, memory_bytes):
     from process_control import WindowsJob, peak_working_set
+    report_r = report_w = None
+    if os.name != "nt":
+        # railexec forks the measured program and reports its own peak RSS.
+        # Waiting on it directly would count this (large) Python process too:
+        # Linux keeps the pre-exec peak of a forked child.
+        report_r, report_w = os.pipe()
+        command = [RAILEXEC, report_w, *command]
     options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session": True}
     if os.name != "nt":
         def limit():
             import resource
             resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
         options["preexec_fn"] = limit
+        options["pass_fds"] = (report_w,)
     start = time.monotonic()
     proc = subprocess.Popen(list(map(str, command)), cwd=directory, stdout=subprocess.DEVNULL,
                             stderr=subprocess.PIPE, **options)
+    if report_w is not None:
+        os.close(report_w)
     job = WindowsJob(memory_bytes) if os.name == "nt" else None
     if job:
         job.attach(proc)
+    if os.name != "nt":
+        import signal
+        timed_out = False
+        try:
+            _, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            os.killpg(proc.pid, signal.SIGKILL)
+            _, stderr = proc.communicate()
+        with os.fdopen(report_r) as source:
+            report = source.read().split()
+        exit_code, maxrss = proc.returncode, None
+        if len(report) >= 6 and report[0] == "exit":  # railexec finished: the program's own status
+            exit_code = -int(report[3]) if int(report[3]) else int(report[1])
+            maxrss = int(report[5]) / 1024
+        return {"exit": exit_code, "timed_out": timed_out, "wall_s": time.monotonic() - start,
+                "maxrss_mb": maxrss, "stderr": stderr[-4000:].decode(errors="replace"), "sandbox": "posix_resource_trial"}
     stop = threading.Event(); peaks = []
     def monitor():
         while not stop.is_set():
-            if os.name == "nt":
-                peaks.append(peak_working_set(proc))
+            peaks.append(peak_working_set(proc))
             stop.wait(.02)
     observer = threading.Thread(target=monitor, daemon=True); observer.start()
     timed_out = False
@@ -85,20 +114,14 @@ def run_process(command, directory, timeout, memory_bytes):
         _, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         timed_out = True
-        if job:
-            job.terminate()
-        else:
-            import signal
-            os.killpg(proc.pid, signal.SIGKILL)
+        job.terminate()
         _, stderr = proc.communicate()
     finally:
         stop.set(); observer.join()
-        if os.name == "nt":
-            peaks.append(peak_working_set(proc))
-        if job:
-            job.close()
+        peaks.append(peak_working_set(proc))
+        job.close()
     return {"exit": proc.returncode, "timed_out": timed_out, "wall_s": time.monotonic() - start,
-            "maxrss_mb": max(peaks, default=0) / 2**20 if os.name == "nt" else None,
+            "maxrss_mb": max(peaks, default=0) / 2**20,
             "stderr": stderr[-4000:].decode(errors="replace"), "sandbox": "windows_job_trial" if job else "posix_resource_trial"}
 
 
@@ -274,6 +297,9 @@ def main():
     score_parser.add_argument("--management",type=Path)
     score_parser.add_argument("--checks",type=Path)
     a = parser.parse_args()
+    global RAILEXEC
+    if getattr(a, "build", None):
+        RAILEXEC = a.build / "railexec"
     if a.command == "prepare":
         if a.count < 1:
             parser.error("count must be positive")
