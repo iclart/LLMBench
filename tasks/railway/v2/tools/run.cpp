@@ -8,7 +8,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
-#include <map>
+#include <unordered_map>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -138,9 +138,13 @@ int run(int argc, char** argv) {
   input >> tag; if (tag != "END" || (input >> tag)) throw std::runtime_error("invalid load trailer");
   std::vector<Event> events(commands.size());
   auto handles = std::make_unique<std::atomic<uint64_t>[]>(commands.size());
+  // Live orders, sharded by order ID so that concurrent callers rarely share
+  // a lock; refunds and exchanges still pick orders booked by any thread.
   struct Live { uint64_t id; v2::CellMask active; };
-  std::mutex live_mu; std::vector<Live> live;
-  std::map<uint64_t, size_t> live_index;
+  struct alignas(64) LiveShard { std::mutex mu; std::vector<Live> live; std::unordered_map<uint64_t, size_t> index; };
+  constexpr size_t kLiveShards = 64;
+  auto shards = std::make_unique<LiveShard[]>(kLiveShards);
+  auto shard_of = [&](uint64_t id) -> LiveShard& { return shards[(id * 0x9e3779b97f4a7c15ull) >> 58]; };
   std::mutex init_mu;std::condition_variable init_cv;bool init_done=false;
   std::thread watchdog([&]{
     std::unique_lock<std::mutex> lock(init_mu);
@@ -165,12 +169,16 @@ int run(int argc, char** argv) {
     if (c.op == 'R' || c.op == 'E') {
       c.order = c.target < commands.size() ? handles[c.target].load(std::memory_order_acquire) : 0;
       if (c.target == UINT64_MAX) {
-        std::lock_guard<std::mutex> lock(live_mu);
+        // A pseudo-random live order: a shard from the command index, then a
+        // random entry of the first nonempty shard from there.
         uint64_t state = (i + 1) * 0x9e3779b97f4a7c15ull;
-        for (unsigned attempt = 0; attempt < 64 && !live.empty(); ++attempt) {
-          state ^= state >> 12; state ^= state << 25; state ^= state >> 27;
-          auto& chosen = live[(state * 2685821657736338717ull) % live.size()];
-          if (!chosen.active) continue;
+        state ^= state >> 12; state ^= state << 25; state ^= state >> 27;
+        const size_t first = size_t(state >> 58);
+        for (size_t k = 0; k < kLiveShards; ++k) {
+          auto& shard = shards[(first + k) % kLiveShards];
+          std::lock_guard<std::mutex> lock(shard.mu);
+          if (shard.live.empty()) continue;
+          const auto& chosen = shard.live[(state * 2685821657736338717ull) % shard.live.size()];
           c.order = chosen.id;
           c.cells &= chosen.active;
           if (!c.cells) c.cells = v2::CellMask(chosen.active & -chosen.active);
@@ -190,24 +198,27 @@ int run(int argc, char** argv) {
     event.end = ns(Clock::now() - epoch);
     if ((c.op == 'B' || c.op == 'E') && event.status == Status::Ok) handles[i].store(event.book.order_id, std::memory_order_release);
     if (event.status == Status::Ok && c.op != 'Q') {
-      std::lock_guard<std::mutex> lock(live_mu);
       if (c.op == 'R' || c.op == 'E') {
-        auto pos = live_index.find(c.order);
-        if (pos != live_index.end()) {
+        auto& shard = shard_of(c.order);
+        std::lock_guard<std::mutex> lock(shard.mu);
+        auto pos = shard.index.find(c.order);
+        if (pos != shard.index.end()) {
           const size_t index = pos->second;
-          live[index].active &= ~c.cells;
-          if (!live[index].active) {
-            if (index + 1 != live.size()) {
-              live[index] = live.back();
-              live_index[live[index].id] = index;
+          shard.live[index].active &= ~c.cells;
+          if (!shard.live[index].active) {
+            if (index + 1 != shard.live.size()) {
+              shard.live[index] = shard.live.back();
+              shard.index[shard.live[index].id] = index;
             }
-            live.pop_back(); live_index.erase(pos);
+            shard.live.pop_back(); shard.index.erase(pos);
           }
         }
       }
       if (c.op == 'B' || c.op == 'E') {
-        live_index[event.book.order_id] = live.size();
-        live.push_back({event.book.order_id, v2::all_cells(c.book.passenger_count, c.book.leg_count)});
+        auto& shard = shard_of(event.book.order_id);
+        std::lock_guard<std::mutex> lock(shard.mu);
+        shard.index[event.book.order_id] = shard.live.size();
+        shard.live.push_back({event.book.order_id, v2::all_cells(c.book.passenger_count, c.book.leg_count)});
       }
     }
   };
