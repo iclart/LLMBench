@@ -170,11 +170,30 @@ def _judge_trace(job):
     return verdict
 
 
+def _judge_trace_native(binary, world, trace, process, timeout):
+    if process["exit"] or process["timed_out"]:
+        return {"ok": False, "errors": ["process failed"], "process": process}
+    output = trace.with_suffix(".native.json")
+    try:
+        completed = subprocess.run([str(binary), str(world), str(trace), "--out", str(output)],
+                                   capture_output=True, text=True, timeout=timeout)
+        if completed.returncode not in (0, 1) or not output.is_file():
+            raise RuntimeError(f"native judge failed ({completed.returncode}): {completed.stderr[-1200:]}")
+        verdict = json.loads(output.read_text())
+        if not isinstance(verdict.get("ok"), bool) or verdict["ok"] != (completed.returncode == 0):
+            raise RuntimeError("native judge returned inconsistent verdict")
+    except (subprocess.TimeoutExpired, RuntimeError, OSError, ValueError) as error:
+        verdict = {"ok": False, "errors": [{"kind": "native_judge_failure", "detail": str(error)}]}
+    verdict["process"] = process
+    return verdict
+
+
 def evaluate(a):
     manifest = validate_season(a.season)
     a.out.mkdir(parents=True, exist_ok=False)
     sys.path.insert(0, str(TASK / "eval"))
     from compare_reference import pin_four_cores
+    a.original_affinity = os.sched_getaffinity(0) if os.name != "nt" else None
     cpus = pin_four_cores()
     if a.src:
         executable = a.out / ("submission" + SUFFIX)
@@ -232,8 +251,25 @@ def evaluate(a):
                                       a.out, a.timeout, int((1536 + (calibration["harness_mb"][f"{scenario}/t{threads}"] if calibration else a.harness_mb)) * 2**20))
                 runs.append((scenario, threads, name, trace, process))
                 print(name, "measured", "failed" if process["exit"] or process["timed_out"] else "", flush=True)
-    with concurrent.futures.ProcessPoolExecutor(max_workers=a.jobs, initializer=_judge_init, initargs=(a.season / "world.world",)) as pool:
-        verdicts = list(pool.map(_judge_trace, [(trace, process) for *_, trace, process in runs]))
+    if os.name != "nt" and a.judge_cpus == "all":
+        os.sched_setaffinity(0, a.original_affinity)
+    jobs = [(trace, process) for *_, trace, process in runs]
+    verdicts = [None] * len(jobs)
+    if a.judge == "python":
+        pool = concurrent.futures.ProcessPoolExecutor(max_workers=a.jobs, initializer=_judge_init, initargs=(a.season / "world.world",))
+        execute = lambda job: pool.submit(_judge_trace, job)
+    else:
+        binary = a.build / "v2" / ("railv2_judge" + SUFFIX)
+        if not binary.is_file():
+            raise RuntimeError("native judge missing; rebuild CMake: " + str(binary))
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=a.jobs)
+        execute = lambda job: pool.submit(_judge_trace_native, binary, a.season / "world.world", job[0], job[1], a.judge_timeout)
+    with pool:
+        futures = {execute(job): i for i, job in enumerate(jobs)}
+        for n, future in enumerate(concurrent.futures.as_completed(futures), 1):
+            i = futures[future]
+            verdicts[i] = future.result()
+            print(f"judged {n}/{len(jobs)}: {runs[i][2]} {'ok' if verdicts[i]['ok'] else 'failed'}", flush=True)
     for scenario in SCENARIOS:
         for threads in (1, 4, 16):
             raw = []
@@ -308,7 +344,11 @@ def main():
     source.add_argument("--engine", choices=("baseline", "strong", "stub"))
     ev.add_argument("--cxx", default="g++")
     ev.add_argument("--repeats", type=int, default=5)
-    ev.add_argument("--jobs", type=int, default=os.cpu_count() or 1, help="parallel judges, after all measurements")
+    ev.add_argument("--jobs", type=int, default=min(4, os.cpu_count() or 1), help="offline judge workers")
+    ev.add_argument("--judge", choices=("native", "python"), default="python",
+                    help="Python oracle (default until differential validation), or native C++20 judge")
+    ev.add_argument("--judge-cpus", choices=("all", "measured"), default="all")
+    ev.add_argument("--judge-timeout", type=float, default=3600)
     ev.add_argument("--timeout", type=float, default=600)
     ev.add_argument("--harness-mb", type=float, default=0, help="measured stub footprint; do not guess for scored runs")
     ev.add_argument("--calibration",type=Path,help="same-season calibrate/calibration.json")
@@ -336,7 +376,7 @@ def main():
         read=lambda p:json.loads(p.read_text()) if p else None
         a.out.write_text(json.dumps(scoring.score(read(a.measured),read(a.baseline),read(a.strong),read(a.management),read(a.checks)),indent=2))
     else:
-        if a.repeats < 1 or a.timeout <= 0 or a.harness_mb < 0 or a.jobs < 1:
+        if a.repeats < 1 or a.timeout <= 0 or a.judge_timeout <= 0 or a.harness_mb < 0 or a.jobs < 1:
             parser.error("invalid measurement limits")
         evaluate(a)
 

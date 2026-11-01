@@ -40,3 +40,11 @@ python tasks/railway/v2/pilots.py --workspace <workspace> --out <pilot-preflight
 `pilots.py --execute` 顺序创建三个空实现工作区，调用同款模型 `opencode-go/deepseek-v4.1-flash#max`、OpenCode 2.0.32、105 分钟的试跑器；工具版本不同会记录差异并停止，不伪装成同款验证。随后用同一隐藏赛季评测每个最终 `src/`，使用 `tools/scoring.py::pilot_gate` 验证至少两次正确、中位性能分不超过 80。
 
 正式总分必须有 65/10/12/8/5 五个组件，并通过正确性、ASan/UBSan、TSan、跨平台生成一致性、经营区分度和三次难度试跑。当前没有这些证据时，`total=null`、`published=false`，不影响 ABI 2 作为当前正式题目的地位。`report.py` 生成独立实验 HTML，不改旧榜单。
+
+## C++20 离线裁判（待差分验证）
+
+本仓库提供独立的 `railv2_judge` C++20 裁判二进制，可直接读取与 Python 裁判相同的 JSONL 日志。为了避免未经验证的裁判误判正式成绩，`evaluate.py evaluate` **仍默认使用 Python 裁判**；使用 `--judge native` 可显式启用 C++ 裁判。两个模式都不修改计时阶段的四核约束；离线裁判可通过 `--jobs`、`--judge-cpus` 控制资源，原生裁判还支持 `--judge-timeout`。
+
+独立 C++ 实现包含时刻表索引、可达性位图、精确短并发历史搜索和大并发历史保守审计；保留 Python 裁判作为独立 Oracle。CMake 的 `railv2_tools` 测试增加了对真实引擎生成日志的新旧判定对照，但提交前尚未在全量隐藏负载上验证，**不能据此断言两个裁判完全等价**。合并后先运行全套 CTest，再对隐藏日志做差分测试，确认完全一致后才考虑将默认裁判切换为 native。
+
+所有 `v2` 源码或文档变动都会改变 `task_version`，所以必须重新冻结赛季和对应的 Strong/Baseline 锚点，不能跨任务指纹复用结果。
