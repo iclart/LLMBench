@@ -1,78 +1,46 @@
 # LLMBench
 
-一个评测 LLM Agent 工程能力的框架：给 Agent 一份规格和固定的工具链，限时从零写出一个程序，再用独立的压测器和裁判打分。
+评测 LLM Coding Agent 的限时工程能力：选手按固定 C++20 接口实现程序，由独立负载、正确性裁判和性能测量工具检验。
 
-设计决策与理由见 [`docs/DESIGN.md`](docs/DESIGN.md)。
+## 当前正式题目：铁路订票系统 ABI 2
 
-## 题目
+**ABI 2 是当前主线题目与默认开发目标。** 规格见 [任务说明](tasks/railway/v2/TASK.md)、[接口头文件](tasks/railway/v2/include/ticket_system_v2.h)，运行和评测说明见 [ABI 2 指南](tasks/railway/v2/README.md)。
 
-| 题目 | 目录 | 状态 |
-|---|---|---|
-| 铁路订票系统：高并发、区间票、换乘规划、选座 | [`tasks/railway/`](tasks/railway/) | 里程碑 5：打包与运行工具就绪，待试跑 |
+ABI 2 支持实时库存查询、区间票、原子改签、按票格部分退票、多线程并发与经营模式。它有独立的工作区打包、数据生成、裁判、评分和报告工具。
 
-## 铁路订票系统
+**主线正式 ≠ 某次成绩已获发布资格。** ABI 2 的评分器只有在正确性、ASan/UBSan、TSan、跨平台一致性、经营证据、难度试跑及五个分项均满足要求时才生成正式总分；否则返回 `total: null`、`published: false`。现阶段不可把试跑或未验证的结果当作官方排行榜成绩。
 
-- [`TASK.md`](tasks/railway/TASK.md)：交给 Agent 的完整规格。
-- [`include/ticket_system.h`](tasks/railway/include/ticket_system.h)：选手要实现的 C++ 接口。
-- `tools/`：负载生成器 `railgen`、单线程驱动 `railrun`、并发压测器 `railbench`、裁判 `railjudge` 与共用代码。
-- `tests/mutants/`：注入典型错误的变异引擎，裁判必须全部抓到。
-- `eval/`：正式评测编排；`agent/`：打包工作区、用 OpenCode 自动运行 Agent 或用任意工具人工运行（快照、时间提醒、提前交卷、强制收卷），见 [`agent/README.md`](tasks/railway/agent/README.md)；`report/`：生成排行榜和每次运行详情的静态 HTML 报告。
-- `reference/baseline/`：基线参考实现（性能分 0 分锚点）。
-- `reference/oracle/`：穷举式判定基准，只用于交叉比对 `query`。
-- `configs/public/`：公开负载配置（规模约为隐藏负载的 1/10）。
-- 强参考实现和隐藏配置在私有子模块 `private/`（[iclart/LLMBenchReference](https://github.com/iclart/LLMBenchReference)）中，没有权限时其余部分照常构建。
-- [`v2/README.md`](tasks/railway/v2/README.md)：实验版实时余票、原子改签与部分退票，以及独立模型、Windows 试跑和发布关卡；尚未发布正式赛季。
+### 构建及基础测试
 
-需要强参考时：`git submodule update --init private`。
-
-### 构建与测试
-
-需要 CMake ≥ 3.20 和支持 C++20 的 g++（Linux）或 MinGW-w64 g++（Windows）。
+需要 CMake ≥ 3.20、C++20 编译器和 Python 3（完整运行环境见 [ABI 2 指南](tasks/railway/v2/README.md)）。
 
 ```sh
-cmake -S . -B build
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-### 生成数据
+### ABI 2 公共工作区与试跑
+
+以下命令在仓库根目录执行，所有输出目录必须是尚不存在的新目录；`--build` 指向 `build/tasks/railway`：
 
 ```sh
-G=build/tasks/railway/railgen
-C=tasks/railway/configs/public
-$G world $C/world.cfg 1 pub.world
-$G load  pub.world $C/daily.cfg 2 daily.load      # 另有 spring.cfg、refund_wave.cfg
-$G stats pub.world daily.load
-
-R=build/tasks/railway/railrun_baseline   # 或 railrun_oracle、railrun_strong
-$R verify pub.world daily.load --limit 2000          # 单线程重放并校验，打印满足率、周转量、利用率
-$R tickets pub.world daily.load --limit 40           # 同上，并打印出的每张票（车次、时刻、座位号）
-python3 tasks/railway/eval/make_suite.py --world pub.world --reference $R --seed 9 --out pub.suite
-$R func pub.world pub.suite                          # 功能测试：按类别统计通过率
-$R query  pub.world daily.load out.answers --random 1000 7
-
-# 并发压测 + 判定：参考答案来自任何与 oracle 一致的引擎
-build/tasks/railway/railrun_baseline query pub.world daily.load ref.answers
-build/tasks/railway/railbench_baseline pub.world daily.load 4 run.log
-build/tasks/railway/railjudge pub.world daily.load ref.answers run.log   # 输出 JSON，出错时退出码为 1
+python3 tasks/railway/v2/evaluate.py prepare --season seasons/v2-public --build build/tasks/railway --public --count 100000
+python3 tasks/railway/v2/evaluate.py calibrate --season seasons/v2-public --build build/tasks/railway --out results/v2-memory
+python3 tasks/railway/v2/evaluate.py evaluate --season seasons/v2-public --build build/tasks/railway --engine baseline --calibration results/v2-memory/calibration.json --out results/v2-baseline
+python3 tasks/railway/v2/package_workspace.py --season seasons/v2-public --build build/tasks/railway --out workspaces/v2-public --selftest
 ```
 
-### 正式评测
+`--engine strong` 仅在配置 `-DRAIL_V2_STRONG=<私有强参考源码>` 后才构建；没有私有强参考时仍可运行公开构建、校验和基线试跑，但**不能形成正式对标分数**。正式评测还须用同一 ABI 2 赛季、平台、编译参数和 CPU 配置的锚点。
 
-`tasks/railway/eval/railway_eval.py`（仅依赖 Python 标准库，需要 Linux；官方评测还需要 `bwrap`）：
+### 隔离与发布
 
-```sh
-E="python3 tasks/railway/eval/railway_eval.py"
-# 1. 准备一季：生成数据、参考答案、压测器内存基准、基线与强参考锚点
-$E prepare  --season seasons/s1 --configs private/railway/hidden --seed <赛季种子>
-# 2. 评测一份提交（src/ 目录）；--lite 为快照用的精简流程
-$E evaluate --season seasons/s1 --src path/to/src --out result.json
-# 3. 评测一个参赛单位的全部快照（按目录名排序，最后一个按完整流程）
-$E snapshots --season seasons/s1 --snapshots path/to/snapshots --out results/
-```
+- Windows MinGW 为本地功能和性能试跑；当前 ABI 2 的 Linux 测量器也**不是**正式隔离沙箱，不能宣称已满足隔离上线条件。
+- 独立 `validate.py` 可采集测试和跨平台生成证据；`tools/scoring.py` 的发布关卡不因“主线”身份而自动放行。
+- ABI 2 的任务指纹包含其目录下的 Markdown；修改文档后须重新准备赛季及校准数据。
 
-每次运行都在 `bwrap` 沙箱里（无网络、无 `/proc`、只读文件系统），绑定到 `--cpus` 指定的核，由 `railexec` 汇报真实的退出状态和峰值内存。
+## 历史版：ABI 1
 
-ThreadSanitizer 构建：`cmake -S . -B build-tsan -DRAIL_TSAN=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo`。
+ABI 1 保留在 [`tasks/railway/TASK.md`](tasks/railway/TASK.md) 和 [旧 Agent 指南](tasks/railway/agent/README.md) 中，旧赛季评测入口为 `tasks/railway/eval/railway_eval.py`。旧接口、成绩和参考锚点**不与 ABI 2 互通**。设计沿革见 [ABI 1 设计文档](docs/DESIGN.md)。
 
-同一个配置和种子在 Linux 和 Windows 上生成逐字节相同的文件，由测试里的哈希检查保证。
+完整的版本、命令与结果边界见 [`docs/VERSIONS.md`](docs/VERSIONS.md)。

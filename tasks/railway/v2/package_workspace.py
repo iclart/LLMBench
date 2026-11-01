@@ -44,7 +44,7 @@ def package(season, build, out, tsan_build=None):
     if found != allowed:
         raise RuntimeError("package whitelist mismatch")
     metadata = {"abi_version": 2, "task_version": manifest["task_version"], "public_seed": manifest["seed"],
-                "python_version": list(sys.version_info[:2]), "status": "experimental",
+                "python_version": list(sys.version_info[:2]), "status": "primary_task",
                 "sanitizers":["tsan"] if tsan_build else [],
                 "files": {name: sha(out / name) for name in sorted(allowed)}}
     (out / ".task_version").write_text(json.dumps(metadata, indent=2))

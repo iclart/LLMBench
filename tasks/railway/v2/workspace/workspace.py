@@ -70,7 +70,7 @@ def main():
         print(json.dumps(bench(a.scenario, a.threads), indent=2))
     elif a.command == "score":
         values = {s: bench(s, a.threads) for s in ("daily", "spring", "refund_wave")}
-        print(json.dumps({"abi_version": 2, "total": None, "status": "experimental",
+        print(json.dumps({"abi_version": 2, "total": None, "status": "unverified",
                           "reason": "No validated management/pilot/platform gate: no formal total", "measurements": values}, indent=2))
     elif a.command == "time":
         deadline = ROOT / ".deadline"

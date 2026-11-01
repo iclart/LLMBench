@@ -1,6 +1,6 @@
-# 铁路题实验赛季 ABI 2
+# 铁路订票系统 ABI 2 · 当前正式主线
 
-本目录实现实时余票查询、任意票格退款、原子改签及分模式经营回放。现版 ABI 1、旧报告和正式锚点独立保留。私有强参考通过 `RAIL_V2_STRONG` 指定，禁止复制进公开包。
+**状态：ABI 2 已成为当前正式任务规格；正式成绩仍须满足全部发布证据与评分门槛。** 本目录实现实时余票查询、任意票格退款、原子改签及分模式经营回放。现版 ABI 1、旧报告和正式锚点独立保留。ABI 1 的 `eval/railway_eval.py`、工作区及锚点不可复用；版本对照见 [`../../../docs/VERSIONS.md`](../../../docs/VERSIONS.md)。私有强参考通过 `RAIL_V2_STRONG` 指定，禁止复制进公开包。
 
 ## 构建与检查
 
@@ -14,9 +14,9 @@ Linux 分别使用 `-DRAIL_ASAN_UBSAN=ON` 与 `-DRAIL_TSAN=ON` 创建独立构�
 
 七个 C++ 变异分别覆盖漏方案、退款多释放、改签半提交、失败订票泄漏、重复退票成功、查询忽略库存、退票不释放；混合快照由独立历史测试覆盖。跨日、碎片、旧票复用、回滚、交叠/不交叠票格操作均有功能检查。
 
-## 可复现的实验流水线
+## 主线评测与验证流水线
 
-以下 `<build>` 指 `build/tasks/railway`，各输出目录必须全新。最终修改源码后再生成赛季；任务指纹变化会拒绝复用旧赛季和锚点。
+以下 `<build>` 指 `build/tasks/railway`，各输出目录必须全新。最终修改源码或 v2 目录内 Markdown 文档后再生成赛季；`evaluate.py::task_version()` 对 v2 目录的 `.py`、`.cpp`、`.h`、`.md` 文件和 ABI 1 接口头文件计算任务指纹。指纹变化会拒绝复用旧赛季和锚点。
 
 ```powershell
 python tasks/railway/v2/evaluate.py prepare --season <public-season> --build <build> --public --count 100000
@@ -27,9 +27,9 @@ python tasks/railway/v2/package_workspace.py --season <public-season> --build <b
 python tasks/railway/v2/pilots.py --workspace <workspace> --out <pilot-preflight>
 ```
 
-隐藏赛季使用 `prepare --world <private-world>`。评测选手使用 `evaluate --src <src-dir>`；评分使用 `evaluate score --measured <result.json> --baseline <result.json> --strong <result.json> --out <score.json>`。锚点必须具有相同输入哈希、任务指纹、平台、编译参数及核心配置，ABI 1 锚点会被拒绝。每接口不足一万次测量时性能分缺失，不能用零样本生成满分。内存先测相同负载的空引擎开销，再从峰值中扣除；Windows Job Object 限制提交内存并在超时杀掉进程树；Linux 由 `railexec` 报告被测程序自身的峰值内存。`evaluate` 先在安静的机器上顺序完成全部测量，再用 `--jobs` 个进程（默认 CPU 数）并行裁判；某组第一次失败之后的重复不计入。Windows 为本地试跑，当前 Linux runner 不是正式隔离沙箱。
+隐藏赛季使用 `prepare --world <private-world>`。评测选手使用 `evaluate --src <src-dir>`；评分使用 `evaluate score --measured <result.json> --baseline <result.json> --strong <result.json> --out <score.json>`。锚点必须具有相同输入哈希、任务指纹、平台、编译参数及核心配置，ABI 1 锚点会被拒绝。每接口不足一万次测量时性能分缺失，不能用零样本生成满分。内存先测相同负载的空引擎开销，再从峰值中扣除；Windows Job Object 限制提交内存并在超时杀掉进程树；Linux 由 `railexec` 报告被测程序自身的峰值内存。`evaluate` 先在安静的机器上顺序完成全部测量，再用 `--jobs` 个进程（默认 CPU 数）并行裁判；某组第一次失败之后的重复不计入。Windows 为本地试跑，当前 Linux runner 不是正式隔离沙箱，仍须补全官方安全隔离后才能承载可信正式成绩。
 
-公开包按白名单复制头文件、空实现、负载、编译好的测试/驱动静态库及 Python 字节码。顺序裁判字节码可被选手分析，不承载秘密；私有引擎和隐藏参数不得进入包。Python 主次版本必须匹配。包内 `make check/bench/score/time/submit` 可用；实验版 `score` 保留正式总分为空。
+公开包按白名单复制头文件、空实现、负载、编译好的测试/驱动静态库及 Python 字节码。顺序裁判字节码可被选手分析，不承载秘密；私有引擎和隐藏参数不得进入包。Python 主次版本必须匹配。包内 `make check/bench/score/time/submit` 可用；工作区 `make score` 只输出未认证的自测结果，不会伪造官方总分；具备完整证据时，应使用独立 `evaluate.py score`。
 
 ## 经营与发布关卡
 
@@ -39,4 +39,4 @@ python tasks/railway/v2/pilots.py --workspace <workspace> --out <pilot-preflight
 
 `pilots.py --execute` 顺序创建三个空实现工作区，调用同款模型 `opencode-go/deepseek-v4.1-flash#max`、OpenCode 2.0.32、105 分钟的试跑器；工具版本不同会记录差异并停止，不伪装成同款验证。随后用同一隐藏赛季评测每个最终 `src/`，使用 `tools/scoring.py::pilot_gate` 验证至少两次正确、中位性能分不超过 80。
 
-正式总分必须有 65/10/12/8/5 五个组件，并通过正确性、ASan/UBSan、TSan、跨平台生成一致性、经营区分度和三次难度试跑。当前没有这些证据时，`total=null`、`published=false`。`report.py` 生成独立实验 HTML，不改旧榜单。
+正式总分必须有 65/10/12/8/5 五个组件，并通过正确性、ASan/UBSan、TSan、跨平台生成一致性、经营区分度和三次难度试跑。当前没有这些证据时，`total=null`、`published=false`，不影响 ABI 2 作为当前正式题目的地位。`report.py` 生成独立实验 HTML，不改旧榜单。
