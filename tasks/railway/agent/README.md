@@ -1,6 +1,6 @@
-# 在 Linux 虚拟机里用 OpenCode 跑一次评测
+# 历史版 ABI 1：在 Linux 虚拟机里运行 Agent
 
-**适用范围：ABI 1。** 本指南使用 ABI 1 的任务、工作区和评测入口。ABI 2 的打包、校准、评测与发布条件均在 [`../v2/README.md`](../v2/README.md)，两者的赛季和成绩不能混用；版本对照见 [`../../../docs/VERSIONS.md`](../../../docs/VERSIONS.md)。
+**历史兼容指南，仅适用于 ABI 1。当前正式任务为 ABI 2，详见 [`../v2/README.md`](../v2/README.md)。** 本指南使用 ABI 1 的任务、工作区和评测入口。ABI 2 的打包、校准、评测与发布条件均在 [`../v2/README.md`](../v2/README.md)，两者的赛季和成绩不能混用；版本对照见 [`../../../docs/VERSIONS.md`](../../../docs/VERSIONS.md)。
 
 本目录的工具负责“让 Agent 做题”的部分：打包工作区、在时限内运行 Agent、定时快照、提前交卷和到点强制收卷。评分用 `../eval/railway_eval.py`，报告用 `../report/report.py`。
 
