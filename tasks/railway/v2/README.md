@@ -1,6 +1,6 @@
 # 铁路题实验赛季 ABI 2
 
-本目录实现实时余票查询、任意票格退款、原子改签及分模式经营回放。现版 ABI 1、旧报告和正式锚点独立保留。私有强参考通过 `RAIL_V2_STRONG` 指定，禁止复制进公开包。
+**状态：实验性 ABI 2，未发布正式赛季。** 本目录实现实时余票查询、任意票格退款、原子改签及分模式经营回放。现版 ABI 1、旧报告和正式锚点独立保留。ABI 1 的 `eval/railway_eval.py`、工作区及锚点不可复用；版本对照见 [`../../../docs/VERSIONS.md`](../../../docs/VERSIONS.md)。私有强参考通过 `RAIL_V2_STRONG` 指定，禁止复制进公开包。
 
 ## 构建与检查
 
@@ -16,7 +16,7 @@ Linux 分别使用 `-DRAIL_ASAN_UBSAN=ON` 与 `-DRAIL_TSAN=ON` 创建独立构�
 
 ## 可复现的实验流水线
 
-以下 `<build>` 指 `build/tasks/railway`，各输出目录必须全新。最终修改源码后再生成赛季；任务指纹变化会拒绝复用旧赛季和锚点。
+以下 `<build>` 指 `build/tasks/railway`，各输出目录必须全新。最终修改源码或 v2 目录内 Markdown 文档后再生成赛季；`evaluate.py::task_version()` 对 v2 目录的 `.py`、`.cpp`、`.h`、`.md` 文件和 ABI 1 接口头文件计算任务指纹。指纹变化会拒绝复用旧赛季和锚点。
 
 ```powershell
 python tasks/railway/v2/evaluate.py prepare --season <public-season> --build <build> --public --count 100000
