@@ -2,13 +2,13 @@
 
 一个评测 LLM Agent 工程能力的框架：给 Agent 一份规格和固定的工具链，限时从零写出一个程序，再用独立的压测器和裁判打分。
 
-设计决策与理由见 [`docs/DESIGN.md`](docs/DESIGN.md)。
+设计决策与理由见 [`docs/DESIGN.md`](docs/DESIGN.md)。**版本边界**：仓库根目录的构建、`tasks/railway/TASK.md`、`eval/railway_eval.py` 和 `agent/` 属于 ABI 1；`tasks/railway/v2/` 是独立的 ABI 2 实验流程，其成绩、锚点与发布资格不可同 ABI 1 混用。参见 [`docs/VERSIONS.md`](docs/VERSIONS.md)。
 
 ## 题目
 
 | 题目 | 目录 | 状态 |
 |---|---|---|
-| 铁路订票系统：高并发、区间票、换乘规划、选座 | [`tasks/railway/`](tasks/railway/) | 里程碑 5：打包与运行工具就绪，待试跑 |
+| 铁路订票系统：高并发、区间票、换乘规划、选座 | [`tasks/railway/`](tasks/railway/) | ABI 1 正式评测流程；ABI 2 单独处于实验阶段 |
 
 ## 铁路订票系统
 
@@ -71,7 +71,7 @@ $E evaluate --season seasons/s1 --src path/to/src --out result.json
 $E snapshots --season seasons/s1 --snapshots path/to/snapshots --out results/
 ```
 
-每次运行都在 `bwrap` 沙箱里（无网络、无 `/proc`、只读文件系统），绑定到 `--cpus` 指定的核，由 `railexec` 汇报真实的退出状态和峰值内存。
+**正式 Linux 评测**使用 `bwrap` 隔离（无网络、无 `/proc`、只读挂载），并按 `--cpus` 绑定核心；`railexec` 汇报被测进程的退出状态和峰值内存。不要将 Windows 本地试跑或 ABI 2 实验测量视为具备同等隔离或正式发布资格。
 
 ThreadSanitizer 构建：`cmake -S . -B build-tsan -DRAIL_TSAN=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo`。
 
