@@ -175,6 +175,7 @@ def evaluate(a):
     a.out.mkdir(parents=True, exist_ok=False)
     sys.path.insert(0, str(TASK / "eval"))
     from compare_reference import pin_four_cores
+    a.original_affinity = os.sched_getaffinity(0) if os.name != "nt" else None
     cpus = pin_four_cores()
     if a.src:
         executable = a.out / ("submission" + SUFFIX)
@@ -232,8 +233,17 @@ def evaluate(a):
                                       a.out, a.timeout, int((1536 + (calibration["harness_mb"][f"{scenario}/t{threads}"] if calibration else a.harness_mb)) * 2**20))
                 runs.append((scenario, threads, name, trace, process))
                 print(name, "measured", "failed" if process["exit"] or process["timed_out"] else "", flush=True)
+    # Keep measurement CPU affinity unchanged, but allow offline judges to
+    # use the available CPU set. No timing measurements run in this phase.
+    if os.name != "nt" and a.judge_cpus == "all":
+        os.sched_setaffinity(0, a.original_affinity)
+    verdicts = [None] * len(runs)
     with concurrent.futures.ProcessPoolExecutor(max_workers=a.jobs, initializer=_judge_init, initargs=(a.season / "world.world",)) as pool:
-        verdicts = list(pool.map(_judge_trace, [(trace, process) for *_, trace, process in runs]))
+        futures = {pool.submit(_judge_trace, (trace, process)): i for i, (*_, trace, process) in enumerate(runs)}
+        for completed, future in enumerate(concurrent.futures.as_completed(futures), 1):
+            i = futures[future]
+            verdicts[i] = future.result()
+            print(f"judged {completed}/{len(runs)}: {runs[i][2]} {'ok' if verdicts[i]['ok'] else 'failed'}", flush=True)
     for scenario in SCENARIOS:
         for threads in (1, 4, 16):
             raw = []
@@ -308,7 +318,9 @@ def main():
     source.add_argument("--engine", choices=("baseline", "strong", "stub"))
     ev.add_argument("--cxx", default="g++")
     ev.add_argument("--repeats", type=int, default=5)
-    ev.add_argument("--jobs", type=int, default=os.cpu_count() or 1, help="parallel judges, after all measurements")
+    ev.add_argument("--jobs", type=int, default=min(4, os.cpu_count() or 1), help="parallel offline judges (default: 4)")
+    ev.add_argument("--judge-cpus", choices=("all", "measured"), default="all",
+                    help="offline judging CPU affinity; measured runs remain pinned to 4 cores")
     ev.add_argument("--timeout", type=float, default=600)
     ev.add_argument("--harness-mb", type=float, default=0, help="measured stub footprint; do not guess for scored runs")
     ev.add_argument("--calibration",type=Path,help="same-season calibrate/calibration.json")
