@@ -1,5 +1,7 @@
 # 在 Linux 虚拟机里用 OpenCode 跑一次评测
 
+**适用范围：ABI 1。** 本指南使用 ABI 1 的任务、工作区和评测入口。ABI 2 的打包、校准、评测与发布条件均在 [`../v2/README.md`](../v2/README.md)，两者的赛季和成绩不能混用；版本对照见 [`../../../docs/VERSIONS.md`](../../../docs/VERSIONS.md)。
+
 本目录的工具负责“让 Agent 做题”的部分：打包工作区、在时限内运行 Agent、定时快照、提前交卷和到点强制收卷。评分用 `../eval/railway_eval.py`，报告用 `../report/report.py`。
 
 Agent 可以用两种方式运行：**OpenCode 自动运行**（`run_opencode.py`，运行器通过 API 驱动 OpenCode）和**人工模式**（`run_manual.py`，任何工具都行，由人按运行器的提示粘贴固定文本）。两者规则相同，成绩进同一张排行榜，人工运行会标注“人工”。
