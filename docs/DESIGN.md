@@ -2,7 +2,7 @@
 
 LLMBench 是一个评测 LLM Agent 工程能力的框架：给 Agent 一份规格和固定的工具链，限时让它从零写出一个程序，再用独立的压测器和裁判打分。
 
-第一道题是**铁路订票系统**（`tasks/railway/`）。本文记录这道题经过逐条讨论后确定的全部设计决策。面向 Agent 的规格见 [`tasks/railway/TASK.md`](../tasks/railway/TASK.md)；两者冲突时以 TASK.md 为准，并应同步修正本文。
+第一道题是**铁路订票系统**（`tasks/railway/`）。**本文介绍 ABI 1 的设计与实现**；实验性 ABI 2 的实时余票、部分退票、原子改签和独立评分参见 [`tasks/railway/v2/README.md`](../tasks/railway/v2/README.md)。两套流程的边界参见 [`VERSIONS.md`](VERSIONS.md)。本文记录这道题经过逐条讨论后确定的全部设计决策。面向 Agent 的规格见 [`tasks/railway/TASK.md`](../tasks/railway/TASK.md)；两者冲突时以 TASK.md 为准，并应同步修正本文。
 
 参考资料：[meow-ai-arena / warehouse](https://github.com/chen-006/meow-ai-arena/tree/main/warehouse)。我们沿用了它“固定编译命令 + 隐藏负载 + 对数加速比计分”的思路，并针对它的已知问题做了改动：隐藏负载不公开、计分对标固定参考实现而不是其他参赛者、正确性用不变量裁判而不是逐字节比对（因为我们要考并发）。
 
