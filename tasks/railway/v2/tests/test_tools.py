@@ -31,6 +31,7 @@ T1 1 0 3 1 440 440 2 480 482 3 520 520
 END
 """
 BINARIES = []
+NATIVE_JUDGE = None
 
 
 class ToolsTest(unittest.TestCase):
@@ -212,6 +213,14 @@ class ToolsTest(unittest.TestCase):
                         lines = [json.loads(line) for line in log.read_text().splitlines()]
                         verdict = check(parsed, lines[0], lines[1:])
                         self.assertTrue(verdict["ok"], (engine, threads, seed, verdict["errors"]))
+                        if NATIVE_JUDGE:
+                            output = root / "native.json"
+                            p = subprocess.run([str(NATIVE_JUDGE), str(world), str(log), "--out", str(output)], capture_output=True, text=True)
+                            self.assertEqual(p.returncode, 0, p.stderr)
+                            native = json.loads(output.read_text())
+                            for field in ("ok", "errors", "exact_calls", "unresolved_calls",
+                                          "complete_linearizability_proof", "latency", "quiet", "quality"):
+                                self.assertEqual(native[field], verdict[field], (field, threads, seed))
                         # Repeated successful release must be caught even in a
                         # component too large for exhaustive linearization.
                         candidate = next((e for e in lines[1:] if e["op"] == "R" and e["status"] == 0), None)
@@ -225,6 +234,10 @@ class ToolsTest(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser(); p.add_argument("--engine", action="append", type=Path, default=[])
-    a, rest = p.parse_known_args(); BINARIES = [p.resolve() for p in a.engine]
+    p = argparse.ArgumentParser()
+    p.add_argument("--engine", action="append", type=Path, default=[])
+    p.add_argument("--native-judge", type=Path)
+    a, rest = p.parse_known_args()
+    BINARIES = [p.resolve() for p in a.engine]
+    NATIVE_JUDGE = a.native_judge.resolve() if a.native_judge else None
     unittest.main(argv=[sys.argv[0], *rest])
