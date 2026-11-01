@@ -72,6 +72,27 @@ class ToolsTest(unittest.TestCase):
             ordered=sorted(found.values(),key=lambda p:(len(p),p[-1][5],-p[0][4],tuple(tuple(l[:2]) for l in p)))
             for k in range(1,6):self.assertEqual(model.query([origin,destination,earliest,k,0,pax]),(0,ordered[:k]),(seed,k))
 
+    def test_query_immutable_indices_reused_across_inventory_clones(self):
+        world = {"stations":4, "trains":[
+            [(0, 360, 360), (1, 400, 402), (2, 440, 442), (3, 480, 480)],
+            [(0, 370, 370), (2, 430, 432), (3, 490, 490)]]}
+        model = Model(world)
+        requests = ([0, 3, 300, 5, 0, 1], [1, 3, 300, 3, 1, 1],
+                    [0, 2, 300, 2, 0, 1])
+        expected = [model.query(q) for q in requests]
+        cached = model.ending_cache[3]
+        cloned = model.clone()
+        self.assertIs(cloned.ending_cache, model.ending_cache)
+        self.assertIs(cloned.stop_indices, model.stop_indices)
+        self.assertEqual([cloned.query(q) for q in requests], expected)
+        self.assertIs(model.ending_cache[3], cached)
+        # Inventory changes must still change answers; never cache query output.
+        booking = {"op":"B","request":{"legs":[[0,0,0,3]],"class":0,"pax":1},
+                   "status":0,"order":1,"seats":[[[1,1,65]]]}
+        self.assertTrue(cloned.apply(booking))
+        self.assertFalse(model.holds)
+        self.assertIs(model.ending_cache[3], cached)
+
     def test_generator_has_distinct_scenarios_and_valid_transactions(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/"w";path.write_text(WORLD);world=load_world(path)

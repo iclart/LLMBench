@@ -55,7 +55,12 @@ class Model:
         self.at = [[] for _ in range(world["stations"])]
         self.incoming=[set() for _ in self.at]
         self.reach_cache={}
+        # Timetable-only indices; shared by cloned inventory states. Never
+        # cache query answers, which depend on live seat availability.
+        self.ending_cache={}
+        self.stop_indices=[]
         for t, stops in enumerate(world["trains"]):
+            self.stop_indices.append({station: i for i, (station, _, _) in enumerate(stops)})
             previous=set()
             for i, (station, _, _) in enumerate(stops):
                 self.at[station].append((t, i))
@@ -82,7 +87,7 @@ class Model:
         if not 0 <= t < len(self.world["trains"]) or not 0 <= d < 3:
             return None
         stops = self.world["trains"][t]
-        indices = {stop[0]: i for i, stop in enumerate(stops)}
+        indices = self.stop_indices[t]
         if a not in indices or b not in indices or indices[a] >= indices[b]:
             return None
         i, j = indices[a], indices[b]
@@ -128,10 +133,17 @@ class Model:
                 reach.append(frozenset(origin for target in reach[-1] for origin in self.incoming[target]))
             self.reach_cache[destination]=tuple(reach)
         reach=self.reach_cache[destination]
-        ending = [[] for _ in self.at]
-        for t, j in self.at[destination]:
-            for i in range(j):
-                ending[self.world["trains"][t][i][0]].append((t, i))
+        # A destination's reverse boarding index is immutable across writes.
+        # Construct it once instead of building thousands of empty station
+        # lists and rescanning all preceding train stops for every query.
+        ending = self.ending_cache.get(destination)
+        if ending is None:
+            ending = {}
+            for t, j in self.at[destination]:
+                for i in range(j):
+                    station = self.world["trains"][t][i][0]
+                    ending.setdefault(station, []).append((t, i))
+            self.ending_cache[destination] = ending
         rank = lambda path: (len(path), path[-1][5], -path[0][4], tuple(x for leg in path for x in leg[:2]))
         # The worst kept arrival once k itineraries are kept; recomputed only
         # when `found` changes (it is read at every step of the search).
@@ -146,13 +158,16 @@ class Model:
             if station not in reach[remaining] or ready >= bound():
                 return
             last = len(path) + 1 == length
-            for t, i in ending[station] if last else self.at[station]:
+            for t, i in ending.get(station, ()) if last else self.at[station]:
                 stops = self.world["trains"][t]
                 for day in range(3):
                     depart = day * 1440 + stops[i][2]
                     if depart < ready or depart >= bound() or (not path and depart >= end) or any(leg[:2] == [t, day] for leg in path):
                         continue
-                    for j in range(i + 1, len(stops)):
+                    # On the final leg, the train's unique destination stop
+                    # is already known from the reverse boarding index.
+                    destinations = (self.stop_indices[t][destination],) if last else range(i + 1, len(stops))
+                    for j in destinations:
                         at, arrive, _ = stops[j]
                         if (at == destination) != last or at == origin or at in transfers or at not in reach[remaining-1] or day * 1440 + arrive > bound():
                             continue
